@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -49,11 +51,12 @@ type testEnv struct {
 	base string
 }
 
-func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorityMap string, keylessTuners int) testEnv {
+// tweak は Bridge が動き出す前に時間などを縮める
+func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorityMap string, keylessTuners int, tweak ...func(*Bridge)) testEnv {
 	t.Helper()
 	mk := newMock(tuners, channels)
 	t.Cleanup(mk.Close)
-	pm, err := parsePriorityMap(priorityMap)
+	pm, err := parsePriorityMap(priorityMap, messages{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +64,9 @@ func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorit
 		Version: "test", KeylessTuners: keylessTuners})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, f := range tweak {
+		f(b)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go b.Watch(ctx)
@@ -386,7 +392,169 @@ func TestGRMatchedByNumberNotServices(t *testing.T) {
 }
 
 func TestParsePriorityMap(t *testing.T) {
-	if _, err := parsePriorityMap("10:2,x"); err == nil {
-		t.Fatal("should fail")
+	if _, err := parsePriorityMap("10:2,x", messages{}); err == nil || !strings.Contains(err.Error(), "読めません") {
+		t.Fatal(err)
+	}
+	if _, err := parsePriorityMap("10:2,x", messages{en: true}); err == nil || !strings.HasPrefix(err.Error(), "cannot parse PRIORITY_MAP") {
+		t.Fatal(err)
+	}
+}
+
+func errorOf(t *testing.T, url string) (int, string) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body struct{ Error string }
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	return res.StatusCode, body.Error
+}
+
+func TestMessagesJapaneseByDefaultAndEnglish(t *testing.T) {
+	ja := setup(t, oneGR, grChannels, "", 9)
+	if s, msg := errorOf(t, ja.base+"/denpa/stream?type=XX&channel=1"); s != 400 || msg != "type・channel・priority を確かめてください" {
+		t.Fatal(s, msg)
+	}
+	en := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.msg = messages{en: true} })
+	if s, msg := errorOf(t, en.base+"/denpa/stream?type=XX&channel=1"); s != 400 || msg != "check type, channel and priority" {
+		t.Fatal(s, msg)
+	}
+	if s, msg := errorOf(t, en.base+"/denpa/stream?type=GR&channel=T40"); s != 404 || msg != "Mirakurun has no channel matching GR T40" {
+		t.Fatal(s, msg)
+	}
+}
+
+// 開いたあと Mirakurun が黙ったら、録れていないのに続いているように見せず接続ごと壊す
+func TestStalledMirakurunIsBroken(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.stallTimeout = 200 * time.Millisecond })
+	e.mk.mu.Lock()
+	e.mk.stall = true
+	e.mk.mu.Unlock()
+	rec := open(t, e.base, q("GR", "T27", "10", "rec 1"))
+	if got := ended(t, rec); got != "broken" {
+		t.Fatal(got)
+	}
+	until(t, func() bool { return e.mk.users(0) == 0 })
+}
+
+// Mirakurun が応答ヘッダを返さないままでも、待ち続けずにチューナーを返す
+func TestHungMirakurunGivesUp(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.stallTimeout = 200 * time.Millisecond })
+	e.mk.mu.Lock()
+	e.mk.hang = true
+	e.mk.mu.Unlock()
+	if got := open(t, e.base, q("GR", "T27", "10", "rec 1")).status; got != 502 {
+		t.Fatal(got)
+	}
+	until(t, func() bool { return e.mk.users(0) == 0 })
+}
+
+// 受け手が読まないまま (電源断など) でも、書き込みの期限でチューナーを返す
+func TestUnreadClientReleasesMirakurun(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.writeTimeout = 200 * time.Millisecond })
+	e.mk.mu.Lock()
+	e.mk.burst = true
+	e.mk.mu.Unlock()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(e.base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	_ = conn.(*net.TCPConn).SetReadBuffer(4096)
+	_, _ = io.WriteString(conn, "GET /denpa/stream?type=GR&channel=T27&priority=10&use=rec+1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	until(t, func() bool { return e.mk.users(0) == 1 })
+	until(t, func() bool { return e.mk.users(0) == 0 })
+}
+
+// 同時に来た番組表 2 本が、どちらも空きと読んで上限を超えない
+func TestKeylessLimitHoldsUnderConcurrency(t *testing.T) {
+	e := setup(t, twoGR, grChannels, "", 1)
+	statuses := make(chan int, 2)
+	for _, ch := range []string{"T27", "T21"} {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			v := url.Values{"type": {"GR"}, "channel": {ch}, "priority": {"3"}, "use": {"epg " + ch}}
+			req, _ := http.NewRequestWithContext(ctx, "GET", e.base+"/denpa/stream?"+v.Encode(), nil)
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			statuses <- res.StatusCode
+			go func() { _, _ = io.Copy(io.Discard, res.Body); res.Body.Close() }()
+		}()
+	}
+	got := []int{<-statuses, <-statuses}
+	slices.Sort(got)
+	if !slices.Equal(got, []int{200, 409}) {
+		t.Fatal(got)
+	}
+}
+
+// SSE を行ごとに読む
+func sseLines(t *testing.T, base string) <-chan string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/denpa/events", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 100)
+	go func() {
+		defer res.Body.Close()
+		sc := bufio.NewScanner(res.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+	return lines
+}
+
+func TestTunerEventsAreCoalesced(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	lines := sseLines(t, e.base)
+	// 繋がったときの "[" から出る 1 回を流してから数える
+	time.Sleep(300 * time.Millisecond)
+	for len(lines) > 0 {
+		<-lines
+	}
+	e.mk.mu.Lock()
+	for range 5 {
+		e.mk.changed()
+	}
+	e.mk.mu.Unlock()
+	count := 0
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case l := <-lines:
+			if l == "event: tuners" {
+				count++
+			}
+			continue
+		case <-deadline:
+		}
+		break
+	}
+	if count != 1 {
+		t.Fatal(count)
+	}
+}
+
+func TestSSEHeartbeat(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.heartbeat = 50 * time.Millisecond })
+	lines := sseLines(t, e.base)
+	select {
+	case l := <-lines:
+		if l != ":" {
+			t.Fatalf("%q", l)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("死活確認が来ません")
 	}
 }

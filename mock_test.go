@@ -45,6 +45,9 @@ type mockMirakurun struct {
 	requests []mockRequest
 	events   []chan struct{}
 	seq      int
+	stall    bool // 最初の塊のあと何も送らない (チューナーが固まった)
+	burst    bool // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
+	hang     bool // 応答ヘッダを返さない (Mirakurun が固まった)
 }
 
 func newMock(tuners [][]string, channels []MirakurunChannel) *mockMirakurun {
@@ -194,6 +197,7 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 	u := &mockUser{id: fmt.Sprintf("127.0.0.1:%d", m.seq), priority: priority, agent: r.Header.Get("User-Agent"), kick: make(chan struct{})}
 	d.users = append(d.users, u)
 	m.changed()
+	stall, burst, hang := m.stall, m.burst, m.hang
 	m.mu.Unlock()
 
 	defer func() {
@@ -202,14 +206,31 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 		m.changed()
 		m.mu.Unlock()
 	}()
+	if hang {
+		<-r.Context().Done()
+		return
+	}
 	w.Header().Set("Content-Type", "video/MP2T")
 	w.Header().Set("X-Mirakurun-Tuner-User-ID", u.id)
 	w.WriteHeader(200)
-	packet := make([]byte, 188*10)
+	size, every := 188*10, 20*time.Millisecond
+	if burst {
+		size, every = 188*1000, time.Millisecond
+	}
+	packet := make([]byte, size)
 	for i := range packet {
 		packet[i] = 0x47
 	}
-	tick := time.NewTicker(20 * time.Millisecond)
+	if stall {
+		_, _ = w.Write(packet)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-u.kick:
+		}
+		return
+	}
+	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
 		if _, err := w.Write(packet); err != nil {
