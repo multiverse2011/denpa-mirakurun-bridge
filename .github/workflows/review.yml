@@ -8,9 +8,14 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
-    if: ${{ !github.event.pull_request.draft }}
+    # フォークには secret が渡らず、外部の人が書いた内容を鍵のある環境で読ませることにもなるので除外
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
