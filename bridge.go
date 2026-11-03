@@ -31,6 +31,7 @@ type Config struct {
 	Version       string
 	KeylessTuners int
 	English       bool
+	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
 
 // messages は応答とログの言葉を選ぶ。コードには英語を先に書き、既定 (en=false) では日本語を出す
@@ -586,7 +587,7 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	data, _ := json.MarshalIndent(next, "", "  ")
 	err := os.MkdirAll(filepath.Dir(b.cfg.ChannelsFile), 0o755)
 	if err == nil {
-		err = writeSynced(b.cfg.ChannelsFile+".tmp", data)
+		err = writeSynced(b.cfg.ChannelsFile+".tmp", data, 0o644)
 	}
 	if err == nil {
 		err = os.Rename(b.cfg.ChannelsFile+".tmp", b.cfg.ChannelsFile)
@@ -609,12 +610,16 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 // rename の前に中身をディスクへ落とし、電源断で空の channels.json が残らないようにする
-func writeSynced(name string, data []byte) error {
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+func writeSynced(name string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
+	// 書きかけが前から残っていると OpenFile の perm は効かない
+	err = f.Chmod(perm)
+	if err == nil {
+		_, err = f.Write(data)
+	}
 	if err == nil {
 		err = f.Sync()
 	}
@@ -677,14 +682,19 @@ func (b *Bridge) events(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !hostAllowed(r.Host, b.cfg.AllowedHosts) {
+	// TLS ではクライアント証明書が要り、ブラウザは繋げないので、名前と Content-Type は見ない (denpa のエージェントと同じ)
+	if b.cfg.Pairing != nil {
+		if !b.gate(w, r) {
+			return
+		}
+	} else if !hostAllowed(r.Host, b.cfg.AllowedHosts) {
 		b.logf("refused unknown host %q (403); add it to ALLOWED_HOSTS",
 			"知らない名前「%s」で呼ばれたので断りました (403)。ALLOWED_HOSTS に足してください", r.Host)
 		writeJSON(w, 403, map[string]string{"error": "unknown host"})
 		return
 	}
 	// ブラウザが下調べ無しに送れる形 (text/plain など) の書き込みは受けない
-	if (r.Method == "PUT" || r.Method == "POST") && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	if b.cfg.Pairing == nil && (r.Method == "PUT" || r.Method == "POST") && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		writeJSON(w, 415, map[string]string{"error": b.msg.t("only application/json is accepted", "application/json だけ受け付けます")})
 		return
 	}
