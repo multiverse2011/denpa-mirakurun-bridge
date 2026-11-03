@@ -45,6 +45,12 @@ func LoadPairing(dir, envToken string) (*Pairing, error) {
 	keyFile, certFile := filepath.Join(dir, "agent.key"), filepath.Join(dir, "agent.crt")
 	_, errKey := os.Stat(keyFile)
 	_, errCert := os.Stat(certFile)
+	// 読めないだけ (権限など) で作り直すと、組んだ denpa が全部外れる
+	for _, err := range []error{errKey, errCert} {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	// 片方だけ残るのは作る途中で落ちたとき。証明書を書く前なので、それを覚えた denpa はいない
 	if errKey != nil || errCert != nil {
 		key, cert, err := newCertificatePEM()
@@ -115,7 +121,7 @@ func resolveToken(envToken, file string) (string, error) {
 		return "", err
 	}
 	buf := make([]byte, 32)
-	rand.Read(buf)
+	rand.Read(buf) // Go 1.24 からエラーを返さない (失敗したらプロセスごと落ちる)
 	t := base64.RawURLEncoding.EncodeToString(buf)
 	return t, writePrivate(file, []byte(t+"\n"))
 }
