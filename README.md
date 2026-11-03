@@ -104,6 +104,7 @@ Mirakurun のデバイス・カードリーダー・`network_mode: host` など�
 | `CHANNELS_FILE` | `data/channels.json` | denpa から受け取るチャンネル一覧。Docker イメージでは `/config/channels.json` |
 | `ALLOWED_HOSTS` | なし | IP アドレス・`localhost`・ドットなしの名前・`.local` など以外でアクセスする際の許可ホスト |
 | `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョン。denpa と揃えると不一致の通知を抑制 |
+| `MESSAGE_LANG` | `ja` | エラー応答とログの言語 (`ja` / `en`) |
 
 ## 動作と制約
 
@@ -111,6 +112,7 @@ Mirakurun のデバイス・カードリーダー・`network_mode: host` など�
 - **ストリーム終了**: Mirakurun 側で終了した場合は、denpa が正常終了と判定しないよう接続を切断する。`after` による引き継ぎ時のみ正常終了する
 - **チャンネル**: 地上波は物理チャンネル番号 (`T27` ↔ `27`)。衛星は Mirakurun が TSID を返さないため、denpa から受け取ったチャンネルのサービス ID で照合する (`BS15:16625` ↔ `BS15_0` など)
 - **`KEYLESS_TUNERS`**: `epg`・`logo`・`scan` の要求は、優先度 0 以上で使用中のチャンネルを共有できる。新規のチューナー使用は上限までとし、BS と CS は合算する。復号は無効 (`decode=0`)
+- **途切れの検出**: Mirakurun から 30 秒データが来ない、または denpa が 30 秒読まない配信は切断し、チューナーを解放する。`/denpa/events` は 30 秒ごとに空のコメント行を送り、無通信による切断を防ぐ
 - **`rank`**: Mirakurun の `tuners.yml` の定義順
 - **カード・復号**: 復号は Mirakurun の decoder が担当する。`/denpa/card` はカードリーダーなしとして正常応答し、`/denpa/decode` は 501 を返す
 - `PUT /denpa/tuners` は 405 (チューナーは Mirakurun で設定する)

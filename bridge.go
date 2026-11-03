@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,10 +30,21 @@ type Config struct {
 	AllowedHosts  []string
 	Version       string
 	KeylessTuners int
+	English       bool
 }
 
-func parsePriorityMap(text string) (map[int]int, error) {
-	m := map[int]int{}
+// messages は応答とログの言葉を選ぶ。コードには英語を先に書き、既定 (en=false) では日本語を出す
+type messages struct{ en bool }
+
+func (m messages) t(en, ja string, args ...any) string {
+	if !m.en {
+		en = ja
+	}
+	return fmt.Sprintf(en, args...)
+}
+
+func parsePriorityMap(text string, m messages) (map[int]int, error) {
+	out := map[int]int{}
 	for _, pair := range strings.Split(text, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
@@ -42,11 +54,11 @@ func parsePriorityMap(text string) (map[int]int, error) {
 		f, err1 := strconv.Atoi(from)
 		t, err2 := strconv.Atoi(to)
 		if !ok || err1 != nil || err2 != nil {
-			return nil, fmt.Errorf("PRIORITY_MAP を読めません: %s (例: 10:2,9:1)", pair)
+			return nil, errors.New(m.t("cannot parse PRIORITY_MAP: %s (e.g. 10:2,9:1)", "PRIORITY_MAP を読めません: %s (例: 10:2,9:1)", pair))
 		}
-		m[f] = t
+		out[f] = t
 	}
-	return m, nil
+	return out, nil
 }
 
 // Mirakurun の HTTP API は 0 未満を 400 で断る
@@ -144,25 +156,40 @@ type logLine struct {
 	Text string `json:"text"`
 }
 
+// listener は SSE の購読者 1 人。種類ごとに 1 つだけ溜め、読み直しを重ねない
+type listener struct{ tuners, channels chan struct{} }
+
 type Bridge struct {
 	cfg       Config
+	msg       messages
 	client    *http.Client
 	mu        sync.Mutex
+	keylessMu sync.Mutex
 	active    map[*active]struct{}
 	pending   map[*pendingReq]struct{}
-	listeners map[chan string]struct{}
+	listeners map[*listener]struct{}
 	stored    []json.RawMessage
 	parsed    []DenpaChannel
 	logs      []logLine
+
+	stallTimeout time.Duration // Mirakurun から何も来ないまま待つ長さ
+	writeTimeout time.Duration // 受け手が読まないまま待つ長さ
+	heartbeat    time.Duration // SSE の死活確認の間隔
+	eventDelay   time.Duration // Mirakurun の通知をまとめる長さ
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
 	b := &Bridge{
-		cfg:       cfg,
-		client:    &http.Client{},
-		active:    map[*active]struct{}{},
-		pending:   map[*pendingReq]struct{}{},
-		listeners: map[chan string]struct{}{},
+		cfg:          cfg,
+		msg:          messages{cfg.English},
+		client:       &http.Client{},
+		active:       map[*active]struct{}{},
+		pending:      map[*pendingReq]struct{}{},
+		listeners:    map[*listener]struct{}{},
+		stallTimeout: 30 * time.Second,
+		writeTimeout: 30 * time.Second,
+		heartbeat:    30 * time.Second,
+		eventDelay:   100 * time.Millisecond,
 	}
 	data, err := os.ReadFile(cfg.ChannelsFile)
 	if err == nil {
@@ -185,8 +212,9 @@ func (b *Bridge) setStored(raw []json.RawMessage) {
 	b.stored, b.parsed = raw, parsed
 }
 
-func (b *Bridge) logf(format string, args ...any) {
-	text := fmt.Sprintf(format, args...)
+// logf は英語と日本語の書式を受け取り、設定の言葉で書く
+func (b *Bridge) logf(en, ja string, args ...any) {
+	text := b.msg.t(en, ja, args...)
 	log.Print("[bridge] " + text)
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -200,8 +228,12 @@ func (b *Bridge) emit(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for l := range b.listeners {
+		c := l.tuners
+		if name == "channels" {
+			c = l.channels
+		}
 		select {
-		case l <- name:
+		case c <- struct{}{}:
 		default:
 		}
 	}
@@ -215,7 +247,11 @@ func (b *Bridge) mk(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	// 読み切ってから閉じると、Mirakurun への接続が使い回せる
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
+		res.Body.Close()
+	}()
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("Mirakurun %s -> %d", path, res.StatusCode)
 	}
@@ -268,7 +304,7 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 			rank = t.Index
 		}
 		if t.IsFault {
-			errText = "Mirakurun がこのチューナーの異常を報告しています"
+			errText = b.msg.t("Mirakurun reports a fault on this tuner", "Mirakurun がこのチューナーの異常を報告しています")
 		}
 		users := []map[string]any{}
 		for _, u := range t.Users {
@@ -293,11 +329,16 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 // 番組表・ロゴ・スキャンに新しくチューナーを取らせてよいか。選ぶのは Mirakurun で、ここは取りに行かせるかだけ決める。
 // 優先度 0 以上の利用者だけを塞いでいるとみなす (Mirakurun 自身の番組表取得 -1 は誰にでも取り上げられる)。
 func (b *Bridge) keylessMayTune(ctx context.Context, typ, mkChannel string) (bool, error) {
+	// 自分の利用者は Mirakurun に聞く前に写す。後で写すと、聞いているあいだに pending から active へ移ったものが
+	// どちらにも載らず、上限を超えて通してしまう
+	mine := b.ours()
+	b.mu.Lock()
+	pending := slices.Collect(maps.Keys(b.pending))
+	b.mu.Unlock()
 	var list []mkTuner
 	if err := b.mk(ctx, "/api/tuners", &list); err != nil {
 		return false, err
 	}
-	mine := b.ours()
 	held := 0
 	sharing := map[string]bool{}
 	for _, t := range list {
@@ -326,13 +367,11 @@ func (b *Bridge) keylessMayTune(ctx context.Context, typ, mkChannel string) (boo
 		}
 	}
 	waiting := map[pendingReq]bool{}
-	b.mu.Lock()
-	for p := range b.pending {
+	for _, p := range pending {
 		if sharing[p.typ] {
 			waiting[*p] = true
 		}
 	}
-	b.mu.Unlock()
 	return held+len(waiting) < b.cfg.KeylessTuners, nil
 }
 
@@ -347,7 +386,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		priority, err = 0, nil
 	}
 	if !slices.Contains([]string{"GR", "BS", "CS", "SKY"}, typ) || channel == "" || err != nil {
-		writeJSON(w, 400, map[string]string{"error": "type・channel・priority を確かめてください"})
+		writeJSON(w, 400, map[string]string{"error": b.msg.t("check type, channel and priority", "type・channel・priority を確かめてください")})
 		return
 	}
 
@@ -366,7 +405,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Unlock()
 	if mkChannel == "" {
-		writeJSON(w, 404, map[string]string{"error": fmt.Sprintf("Mirakurun に %s %s に当たるチャンネルがありません", typ, channel)})
+		writeJSON(w, 404, map[string]string{"error": b.msg.t("Mirakurun has no channel matching %s %s", "Mirakurun に %s %s に当たるチャンネルがありません", typ, channel)})
 		return
 	}
 
@@ -383,22 +422,27 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	})
 	defer release()
 
+	// 数えてから pending に載せるまでを 1 本ずつ通す。同時に来た 2 本がどちらも空きと読まないように。
+	// pending は利用者として数えられる (active に載る) まで残す
+	asking := &pendingReq{typ, mkChannel}
 	if keyless(use) {
+		b.keylessMu.Lock()
 		ok, err := b.keylessMayTune(r.Context(), typ, mkChannel)
+		if err == nil && ok {
+			b.mu.Lock()
+			b.pending[asking] = struct{}{}
+			b.mu.Unlock()
+		}
+		b.keylessMu.Unlock()
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
 		}
 		if !ok {
-			writeJSON(w, 409, map[string]string{"error": fmt.Sprintf("番組表・ロゴ・スキャンに使えるチューナーは %d 台までです (KEYLESS_TUNERS)", b.cfg.KeylessTuners)})
+			writeJSON(w, 409, map[string]string{"error": b.msg.t("at most %d tuners may be used for EPG, logos and scans (KEYLESS_TUNERS)",
+				"番組表・ロゴ・スキャンに使えるチューナーは %d 台までです (KEYLESS_TUNERS)", b.cfg.KeylessTuners)})
 			return
 		}
-	}
-	asking := &pendingReq{typ, mkChannel}
-	if keyless(use) {
-		b.mu.Lock()
-		b.pending[asking] = struct{}{}
-		b.mu.Unlock()
 	}
 	donePending := func() {
 		b.mu.Lock()
@@ -422,12 +466,11 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	release()
 	if err != nil {
 		if r.Context().Err() == nil {
-			writeJSON(w, 502, map[string]string{"error": "Mirakurun に繋がりません: " + err.Error()})
+			writeJSON(w, 502, map[string]string{"error": b.msg.t("cannot reach Mirakurun: %v", "Mirakurun に繋がりません: %v", err)})
 		}
 		return
 	}
 	defer res.Body.Close()
-	donePending()
 
 	if res.StatusCode != http.StatusOK {
 		text, _ := io.ReadAll(io.LimitReader(res.Body, 500))
@@ -438,7 +481,8 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		case 404:
 			status = 404
 		}
-		b.logf("%s %s (%s, priority %d→%d) を開けません: Mirakurun %d", typ, channel, use, priority, mkPriority, res.StatusCode)
+		b.logf("cannot open %s %s (%s, priority %d→%d): Mirakurun %d", "%s %s (%s, priority %d→%d) を開けません: Mirakurun %d",
+			typ, channel, use, priority, mkPriority, res.StatusCode)
 		writeJSON(w, status, map[string]string{"error": fmt.Sprintf("Mirakurun %d: %s", res.StatusCode, text)})
 		return
 	}
@@ -448,6 +492,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.active[me] = struct{}{}
 	b.mu.Unlock()
+	donePending()
 	defer func() {
 		b.mu.Lock()
 		delete(b.active, me)
@@ -458,21 +503,39 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "video/MP2T")
 	w.WriteHeader(200)
-	flusher, _ := w.(http.Flusher)
+	rc := http.NewResponseController(w)
+	defer rc.SetWriteDeadline(time.Time{}) //nolint:errcheck // keep-alive で次の要求に期限を持ち越さない
+	// 何も送ってこない Mirakurun・読まない受け手に、チューナーをいつまでも握らせない
+	var stalled atomic.Bool
+	idle := time.AfterFunc(b.stallTimeout, func() {
+		stalled.Store(true)
+		cancel()
+	})
+	defer idle.Stop()
 	buf := make([]byte, 64*1024)
 	for {
 		n, err := res.Body.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
+			idle.Reset(b.stallTimeout)
+			_ = rc.SetWriteDeadline(time.Now().Add(b.writeTimeout))
+			_, werr := w.Write(buf[:n])
+			if werr == nil {
+				werr = rc.Flush()
 			}
-			if flusher != nil {
-				flusher.Flush()
+			if werr != nil {
+				if errors.Is(werr, os.ErrDeadlineExceeded) {
+					b.logf("closed %s: not read for %v", "%s が %v 読まないので切りました", use, b.writeTimeout)
+				}
+				return
 			}
 		}
 		if err != nil {
 			break
 		}
+	}
+	if stalled.Load() {
+		b.logf("closed %s %s (%s): nothing from Mirakurun for %v", "%s %s (%s) は Mirakurun から %v 何も来ないので切りました",
+			typ, channel, use, b.stallTimeout)
 	}
 	// Mirakurun 側から終わった (取り上げ・失敗) なら、正常終了と読まれないよう接続ごと壊す
 	if !me.handedOff.Load() && r.Context().Err() == nil {
@@ -486,16 +549,16 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 		Scanned  []string          `json:"scanned"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&body); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "本文を JSON として読めません"})
+		writeJSON(w, 400, map[string]string{"error": b.msg.t("cannot parse the body as JSON", "本文を JSON として読めません")})
 		return
 	}
 	if body.Channels == nil || len(body.Scanned) == 0 {
-		writeJSON(w, 400, map[string]string{"error": "channels と scanned が必要です"})
+		writeJSON(w, 400, map[string]string{"error": b.msg.t("channels and scanned are required", "channels と scanned が必要です")})
 		return
 	}
 	// 空で上書きすると録れていた局まで消える (エージェントと同じ断り方)
 	if len(body.Channels) == 0 {
-		writeJSON(w, 400, map[string]string{"error": "チャンネルが 1 件もありません"})
+		writeJSON(w, 400, map[string]string{"error": b.msg.t("no channels given", "チャンネルが 1 件もありません")})
 		return
 	}
 	b.mu.Lock()
@@ -509,7 +572,7 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	data, _ := json.MarshalIndent(next, "", "  ")
 	err := os.MkdirAll(filepath.Dir(b.cfg.ChannelsFile), 0o755)
 	if err == nil {
-		err = os.WriteFile(b.cfg.ChannelsFile+".tmp", data, 0o644)
+		err = writeSynced(b.cfg.ChannelsFile+".tmp", data)
 	}
 	if err == nil {
 		err = os.Rename(b.cfg.ChannelsFile+".tmp", b.cfg.ChannelsFile)
@@ -519,7 +582,7 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Unlock()
 	if err != nil {
-		b.logf("チャンネルを保存できません: %v", err)
+		b.logf("cannot save channels: %v", "チャンネルを保存できません: %v", err)
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
@@ -527,43 +590,71 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, next)
 }
 
+// rename の前に中身をディスクへ落とし、電源断で空の channels.json が残らないようにする
+func writeSynced(name string, data []byte) error {
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 func (b *Bridge) events(w http.ResponseWriter, r *http.Request) {
-	ch := make(chan string, 16)
+	l := &listener{make(chan struct{}, 1), make(chan struct{}, 1)}
 	b.mu.Lock()
-	b.listeners[ch] = struct{}{}
+	b.listeners[l] = struct{}{}
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
-		delete(b.listeners, ch)
+		delete(b.listeners, l)
 		b.mu.Unlock()
 	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
-	flusher, _ := w.(http.Flusher)
-	flusher.Flush()
-	for {
+	rc := http.NewResponseController(w)
+	defer rc.SetWriteDeadline(time.Time{}) //nolint:errcheck
+	// 時々コメント行を送る。黙って消えた購読者は書いてみないと分からず、
+	// denpa (Bun の fetch) は無通信が続くと TimeoutError で切るため
+	ping := time.NewTicker(b.heartbeat)
+	defer ping.Stop()
+	send := func(text string) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(b.writeTimeout))
+		_, err := io.WriteString(w, text)
+		return err == nil && rc.Flush() == nil
+	}
+	ok := send("")
+	for ok {
 		select {
 		case <-r.Context().Done():
 			return
-		case name := <-ch:
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: {}\n\n", name); err != nil {
-				return
-			}
-			flusher.Flush()
+		case <-l.tuners:
+			ok = send("event: tuners\ndata: {}\n\n")
+		case <-l.channels:
+			ok = send("event: channels\ndata: {}\n\n")
+		case <-ping.C:
+			ok = send(":\n\n")
 		}
 	}
 }
 
 func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !hostAllowed(r.Host, b.cfg.AllowedHosts) {
-		b.logf("知らない名前「%s」で呼ばれたので断りました (403)。ALLOWED_HOSTS に足してください", r.Host)
+		b.logf("refused unknown host %q (403); add it to ALLOWED_HOSTS",
+			"知らない名前「%s」で呼ばれたので断りました (403)。ALLOWED_HOSTS に足してください", r.Host)
 		writeJSON(w, 403, map[string]string{"error": "unknown host"})
 		return
 	}
 	// ブラウザが下調べ無しに送れる形 (text/plain など) の書き込みは受けない
 	if (r.Method == "PUT" || r.Method == "POST") && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		writeJSON(w, 415, map[string]string{"error": "application/json だけ受け付けます"})
+		writeJSON(w, 415, map[string]string{"error": b.msg.t("only application/json is accepted", "application/json だけ受け付けます")})
 		return
 	}
 	switch r.Method + " " + r.URL.Path {
@@ -577,7 +668,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"tuners": list, "detected": false})
 	case "PUT /denpa/tuners":
-		writeJSON(w, 405, map[string]string{"error": "チューナーの定義は Mirakurun 側 (tuners.yml) で変えてください"})
+		writeJSON(w, 405, map[string]string{"error": b.msg.t("change tuners in Mirakurun (tuners.yml)",
+			"チューナーの定義は Mirakurun 側 (tuners.yml) で変えてください")})
 	case "GET /denpa/channels":
 		b.mu.Lock()
 		list := b.stored
@@ -594,7 +686,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 復号は Mirakurun の decoder が選局時に行う
 		writeJSON(w, 200, map[string]any{"ok": true, "message": "", "source": "local", "readers": []any{}})
 	case "POST /denpa/decode":
-		writeJSON(w, 501, map[string]any{"ok": false, "error": "録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)"})
+		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
+			"録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)")})
 	case "GET /denpa/logs":
 		b.mu.Lock()
 		lines := slices.Clone(b.logs)
@@ -621,8 +714,18 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Mirakurun のチューナーの出来事を tuners として流す。中身は読まない (denpa が /denpa/tuners を読み直す)
+// Mirakurun のチューナーの出来事を tuners として流す。中身は読まない (denpa が /denpa/tuners を読み直す)。
+// 1 回の選局で出来事は続けて届くので、eventDelay のあいだはまとめて 1 回にする
 func (b *Bridge) Watch(ctx context.Context) {
+	var armed atomic.Bool
+	notify := func() {
+		if armed.CompareAndSwap(false, true) {
+			time.AfterFunc(b.eventDelay, func() {
+				armed.Store(false)
+				b.emit("tuners")
+			})
+		}
+	}
 	wait := time.Second
 	for ctx.Err() == nil {
 		err := func() error {
@@ -641,13 +744,13 @@ func (b *Bridge) Watch(ctx context.Context) {
 				if _, err := res.Body.Read(buf); err != nil {
 					return err
 				}
-				b.emit("tuners")
+				notify()
 			}
 		}()
 		if ctx.Err() != nil {
 			return
 		}
-		b.logf("Mirakurun の通知に繋げません (%v 後に再試行): %v", wait, err)
+		b.logf("cannot follow Mirakurun events (retrying in %v): %v", "Mirakurun の通知に繋げません (%v 後に再試行): %v", wait, err)
 		select {
 		case <-ctx.Done():
 			return
