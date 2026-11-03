@@ -1,8 +1,12 @@
 name: review
 
+# 同じリポジトリの PR は自動。フォークの PR は、メンテナが中身を見て `review` ラベルを付けたときだけ
+# (フォークには pull_request で secret が渡らないため pull_request_target を使う)
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+  pull_request_target:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -14,10 +18,14 @@ concurrency:
 
 jobs:
   review:
-    # フォークには secret が渡らず、外部の人が書いた内容を鍵のある環境で読ませることにもなるので除外
-    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: >-
+      !github.event.pull_request.draft && (
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'pull_request_target' && github.event.label.name == 'review' && github.event.pull_request.head.repo.full_name != github.repository)
+      )
     runs-on: ubuntu-latest
     steps:
+      # ref を指定しない。pull_request_target では base ブランチになり、PR のコードは checkout も実行もしない
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -57,3 +65,9 @@ jobs:
             -q '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- kimi-review -->"))) | .id' |
             head -n -1 |
             xargs -r -I{} gh api -X DELETE "repos/$REPO/issues/comments/{}"
+      # 外して終わるので、フォーク側が push し直した後は付け直せば再レビューされる
+      - name: review ラベルを外す
+        if: always() && github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr edit ${{ github.event.pull_request.number }} -R ${{ github.repository }} --remove-label review
