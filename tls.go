@@ -171,7 +171,10 @@ func writePrivate(name string, data []byte) error {
 	if err := writeSynced(name+".tmp", data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(name+".tmp", name)
+	if err := os.Rename(name+".tmp", name); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(name))
 }
 
 func peerFingerprint(r *http.Request) string {
