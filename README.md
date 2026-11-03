@@ -11,7 +11,7 @@ denpa → このブリッジ ───┘
 
 ## 導入
 
-- denpa とは TLS で繋ぎ、組んだ denpa (クライアント証明書) にしか答えない (denpa の [docs/agent.md](https://github.com/danything/denpa/blob/main/docs/agent.md)「denpa とは TLS で組む」と同じ)。組むには合言葉 (`AGENT_PAIR_TOKEN`) を両方に渡す
+- denpa (v2.28.0 以降) とは TLS で繋ぎ、組んだ denpa (クライアント証明書) にしか答えない (denpa の [docs/agent.md](https://github.com/danything/denpa/blob/main/docs/agent.md)「denpa とは TLS で組む」と同じ)。組むには合言葉 (`AGENT_PAIR_TOKEN`) を両方に渡す
 - v2.27.0 以前の denpa は HTTP でしか繋がらないため、`AGENT_TLS: "0"` を足す。この場合は認証なしで復号済みの TS を返すので、アクセスを denpa に限定する
 - TS の LAN 転送を 1 回に抑えるため、denpa と同じマシンで動かす
 

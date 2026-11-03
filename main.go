@@ -49,7 +49,7 @@ func run() error {
 	if v := env("ALLOWED_HOSTS", ""); v != "" {
 		allowed = strings.Split(v, ",")
 	}
-	// 既定は TLS (denpa の v2.27.0 より後)。AGENT_TLS=0 で v2.27.0 以前の denpa 向けの平文 HTTP
+	// 既定は TLS (denpa v2.28.0 以降)。AGENT_TLS=0 で v2.27.0 以前の denpa 向けの平文 HTTP
 	var pairing *Pairing
 	switch env("AGENT_TLS", "1") {
 	case "1":
