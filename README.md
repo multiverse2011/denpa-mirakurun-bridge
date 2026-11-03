@@ -32,6 +32,64 @@ volumes:
 - 認証は無い。復号済みの TS を返すので、ポートは denpa からしか届かないようにする
 - denpa と同じマシンに置く (TS が LAN を渡るのが 1 回で済む)
 
+Mirakurun もまとめて 1 つの `compose.yml` で立てる場合:
+
+```yaml
+name: denpa
+
+services:
+  mirakurun:
+    image: chinachu/mirakurun:latest
+    restart: always
+    cap_add: [SYS_ADMIN, SYS_NICE]
+    device_cgroup_rules: ["c *:* rmw"]
+    environment:
+      TZ: Asia/Tokyo
+    volumes:
+      - ./mirakurun/config:/app-config
+      - ./mirakurun/data:/app-data
+      - /dev:/dev
+    tmpfs: [/tmp]
+    ports:
+      - "40772:40772" # 他のアプリ用。不要なら消す
+
+  # denpa は既定で tuner-agent:25252 に繋ぐので、この名前で置く
+  tuner-agent:
+    image: ghcr.io/multiverse2011/denpa-mirakurun-bridge:latest
+    restart: unless-stopped
+    stop_grace_period: 10s
+    depends_on: [mirakurun]
+    environment:
+      MIRAKURUN_URL: http://mirakurun:40772
+      PRIORITY_MAP: "10:2,9:1,8:0,5:0,4:0,3:0,1:0"
+    volumes:
+      - bridge-config:/config
+    # ports は出さない (認証が無いため)
+
+  denpa:
+    image: ghcr.io/danything/denpa:latest
+    restart: unless-stopped
+    stop_grace_period: 6h5m
+    depends_on: [tuner-agent]
+    environment:
+      TZ: Asia/Tokyo
+      TRUSTED_NETWORKS: 192.168.0.0/16,10.0.0.0/8
+    volumes:
+      - denpa-data:/data
+      - denpa-recorded:/media/raw
+      - denpa-library:/media/encoded
+    ports:
+      - "3000:3000"
+
+volumes:
+  bridge-config:
+  denpa-data:
+  denpa-recorded:
+  denpa-library:
+```
+
+Mirakurun のデバイス・カードリーダー・`network_mode: host` などは [Mirakurun の compose](https://github.com/Chinachu/Mirakurun/blob/master/docker/docker-compose.yml)、denpa の設定は [denpa の compose.prod.yml](https://github.com/danything/denpa/blob/main/compose.prod.yml) を見る。
+
 手元で動かす場合:
 
 ```sh
