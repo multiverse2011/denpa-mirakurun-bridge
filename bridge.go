@@ -165,6 +165,7 @@ type Bridge struct {
 	client    *http.Client
 	mu        sync.Mutex
 	keylessMu sync.Mutex
+	saveMu    sync.Mutex
 	active    map[*active]struct{}
 	pending   map[*pendingReq]struct{}
 	listeners map[*listener]struct{}
@@ -462,9 +463,20 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("%s/api/channels/%s/%s/stream?decode=%s", b.cfg.MirakurunURL, typ, url.PathEscape(mkChannel), decode), nil)
 	req.Header.Set("X-Mirakurun-Priority", strconv.Itoa(mkPriority))
 	req.Header.Set("User-Agent", fmt.Sprintf("denpa-mirakurun-bridge/%s (%s)", b.cfg.Version, use))
+	// 何も送ってこない Mirakurun・読まない受け手に、チューナーをいつまでも握らせない (応答ヘッダ待ちも含む)
+	var stalled atomic.Bool
+	idle := time.AfterFunc(b.stallTimeout, func() {
+		stalled.Store(true)
+		cancel()
+	})
+	defer idle.Stop()
 	res, err := b.client.Do(req)
 	release()
 	if err != nil {
+		if stalled.Load() {
+			b.logf("gave up on %s %s (%s): no response from Mirakurun for %v", "%s %s (%s) は Mirakurun から %v 応答が無いので諦めました",
+				typ, channel, use, b.stallTimeout)
+		}
 		if r.Context().Err() == nil {
 			writeJSON(w, 502, map[string]string{"error": b.msg.t("cannot reach Mirakurun: %v", "Mirakurun に繋がりません: %v", err)})
 		}
@@ -505,13 +517,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	rc := http.NewResponseController(w)
 	defer rc.SetWriteDeadline(time.Time{}) //nolint:errcheck // keep-alive で次の要求に期限を持ち越さない
-	// 何も送ってこない Mirakurun・読まない受け手に、チューナーをいつまでも握らせない
-	var stalled atomic.Bool
-	idle := time.AfterFunc(b.stallTimeout, func() {
-		stalled.Store(true)
-		cancel()
-	})
-	defer idle.Stop()
+	idle.Reset(b.stallTimeout)
 	buf := make([]byte, 64*1024)
 	for {
 		n, err := res.Body.Read(buf)
@@ -561,6 +567,9 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": b.msg.t("no channels given", "チャンネルが 1 件もありません")})
 		return
 	}
+	// 保存は saveMu で 1 本ずつ通し、b.mu はディスク I/O (fsync) の間握らない
+	b.saveMu.Lock()
+	defer b.saveMu.Unlock()
 	b.mu.Lock()
 	var next []json.RawMessage
 	for i, raw := range b.stored {
@@ -568,6 +577,7 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 			next = append(next, raw)
 		}
 	}
+	b.mu.Unlock()
 	next = append(next, body.Channels...)
 	data, _ := json.MarshalIndent(next, "", "  ")
 	err := os.MkdirAll(filepath.Dir(b.cfg.ChannelsFile), 0o755)
@@ -578,9 +588,10 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 		err = os.Rename(b.cfg.ChannelsFile+".tmp", b.cfg.ChannelsFile)
 	}
 	if err == nil {
+		b.mu.Lock()
 		b.setStored(next)
+		b.mu.Unlock()
 	}
-	b.mu.Unlock()
 	if err != nil {
 		b.logf("cannot save channels: %v", "チャンネルを保存できません: %v", err)
 		writeJSON(w, 500, map[string]string{"error": err.Error()})

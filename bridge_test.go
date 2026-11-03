@@ -439,6 +439,18 @@ func TestStalledMirakurunIsBroken(t *testing.T) {
 	until(t, func() bool { return e.mk.users(0) == 0 })
 }
 
+// Mirakurun が応答ヘッダを返さないままでも、待ち続けずにチューナーを返す
+func TestHungMirakurunGivesUp(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.stallTimeout = 200 * time.Millisecond })
+	e.mk.mu.Lock()
+	e.mk.hang = true
+	e.mk.mu.Unlock()
+	if got := open(t, e.base, q("GR", "T27", "10", "rec 1")).status; got != 502 {
+		t.Fatal(got)
+	}
+	until(t, func() bool { return e.mk.users(0) == 0 })
+}
+
 // 受け手が読まないまま (電源断など) でも、書き込みの期限でチューナーを返す
 func TestUnreadClientReleasesMirakurun(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.writeTimeout = 200 * time.Millisecond })
