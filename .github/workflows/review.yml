@@ -41,8 +41,19 @@ jobs:
             この PR をレビューしてください。バグ、競合状態、エラー処理の漏れ、
             セキュリティ上の問題を優先し、スタイルの好みは指摘しないでください。
             指摘はファイル名と行番号を添えて、`gh pr comment` で1件のコメントにまとめ、
-            日本語で書いてください。
+            日本語で書いてください。コメントの1行目は必ず `<!-- kimi-review -->` にしてください。
             問題がなければ短くそう書くだけで構いません。
           claude_args: |
             --model kimi-for-coding
             --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+      # 新しいレビューが付いてから消すので、レビューが失敗しても前回分は残る
+      - name: 前回のレビューコメントを消す
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            -q '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- kimi-review -->"))) | .id' |
+            head -n -1 |
+            xargs -r -I{} gh api -X DELETE "repos/$REPO/issues/comments/{}"
