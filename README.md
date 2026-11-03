@@ -11,12 +11,13 @@ denpa → このブリッジ ───┘
 
 ## 導入
 
-- 認証なしで復号済みの TS を返すため、アクセスは denpa に限定する
+- denpa とは TLS で繋ぎ、組んだ denpa (クライアント証明書) にしか答えない (denpa の [docs/agent.md](https://github.com/danything/denpa/blob/main/docs/agent.md)「denpa とは TLS で組む」と同じ)。組むには合言葉 (`AGENT_PAIR_TOKEN`) を両方に渡す
+- v2.27.0 以前の denpa は HTTP でしか繋がらないため、`AGENT_TLS: "0"` を足す。この場合は認証なしで復号済みの TS を返すので、アクセスを denpa に限定する
 - TS の LAN 転送を 1 回に抑えるため、denpa と同じマシンで動かす
 
 ### 既存の Mirakurun を使う場合
 
-denpa の `compose.override.yml` で `tuner-agent` を差し替える。denpa 側の設定変更は不要。
+denpa の `compose.override.yml` で `tuner-agent` を差し替える。denpa 側の設定変更は不要 (denpa の compose が `.env` の `AGENT_PAIR_TOKEN` を `tuner-agent` と denpa の `TUNER_AGENT_URL` の両方に渡している)。
 
 ```yaml
 services:
@@ -36,7 +37,11 @@ volumes:
 
 ### Mirakurun も同時に起動する場合
 
-以下を `compose.yml` に保存する。
+以下を `compose.yml` に保存し、同じ場所に合言葉を書いた `.env` を作る。
+
+```sh
+echo "AGENT_PAIR_TOKEN=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')" > .env
+```
 
 ```yaml
 name: denpa
@@ -66,6 +71,7 @@ services:
     environment:
       MIRAKURUN_URL: http://mirakurun:40772
       PRIORITY_MAP: "10:2,9:1,8:0,5:0,4:0,3:0,1:0"
+      AGENT_PAIR_TOKEN: ${AGENT_PAIR_TOKEN:?}
     volumes:
       - bridge-config:/config
 
@@ -76,6 +82,7 @@ services:
     depends_on: [tuner-agent]
     environment:
       TZ: Asia/Tokyo
+      TUNER_AGENT_URL: https://tuner-agent:25252#pair=${AGENT_PAIR_TOKEN:?}
       TRUSTED_NETWORKS: 192.168.0.0/16,10.0.0.0/8
     volumes:
       - denpa-data:/data
@@ -102,11 +109,15 @@ Mirakurun のデバイス・カードリーダー・`network_mode: host` など�
 | `PRIORITY_MAP` | なし | denpa から Mirakurun への優先度変換 (`10:2,9:1`)。未指定の値はそのまま、負の値は 0 |
 | `KEYLESS_TUNERS` | `1` | 番組表・ロゴ取得・スキャンで新規に使用できるチューナー数 |
 | `CHANNELS_FILE` | `data/channels.json` | denpa から受け取るチャンネル一覧。Docker イメージでは `/config/channels.json` |
-| `ALLOWED_HOSTS` | なし | IP アドレス・`localhost`・ドットなしの名前・`.local` など以外でアクセスする際の許可ホスト |
+| `AGENT_TLS` | `1` | `0` で TLS を使わず HTTP で待ち受ける (v2.27.0 以前の denpa 向け) |
+| `AGENT_PAIR_TOKEN` | なし | denpa と組むときの合言葉。未指定なら `CHANNELS_FILE` の隣の `tls/pair-token` に作る |
+| `ALLOWED_HOSTS` | なし | `AGENT_TLS=0` のとき、IP アドレス・`localhost`・ドットなしの名前・`.local` など以外でアクセスする際の許可ホスト |
 | `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョン。denpa と揃えると不一致の通知を抑制 |
 | `MESSAGE_LANG` | `ja` | エラー応答とログの言語 (`ja` / `en`) |
 
 ## 動作と制約
+
+- **TLS**: 鍵・自己署名の証明書・合言葉・組んだ denpa の指紋を `CHANNELS_FILE` の隣の `tls/` (Docker イメージでは `/config/tls`) に置く。証明書は作り直さない。まだ誰とも組んでいなければ、起動時に標準出力へ組むための URL (`https://<ホスト名>:25252#pair=<合言葉>`) を出す。合言葉を変えるには `pair-token` を消して再起動し、組んだ denpa を外すには `clients` からその行を消して再起動する。TLS では Host 名と `Content-Type` を見ない (ブラウザはクライアント証明書を出せず繋げないため)
 
 - **優先度**: denpa の値を `PRIORITY_MAP` で変換し、`X-Mirakurun-Priority` に渡す。チューナーの共有・割り込みは Mirakurun が制御する。503 は 409 (空き待ち) に変換する
 - **ストリーム終了**: Mirakurun 側で終了した場合は、denpa が正常終了と判定しないよう接続を切断する。`after` による引き継ぎ時のみ正常終了する
