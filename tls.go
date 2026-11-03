@@ -36,6 +36,8 @@ type Pairing struct {
 	token       string
 	mu          sync.Mutex
 	clients     map[string]bool
+	tryMu       sync.Mutex    // 合言葉の照合を 1 本ずつ通す
+	failDelay   time.Duration // 外れたら次を受けるまで待つ長さ (総当たり避け)
 }
 
 func LoadPairing(dir, envToken string) (*Pairing, error) {
@@ -72,7 +74,7 @@ func LoadPairing(dir, envToken string) (*Pairing, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Pairing{dir: dir, Certificate: cert, fingerprint: fingerprintOf(cert.Certificate[0]), token: token, clients: map[string]bool{}}
+	p := &Pairing{dir: dir, Certificate: cert, fingerprint: fingerprintOf(cert.Certificate[0]), token: token, clients: map[string]bool{}, failDelay: time.Second}
 	data, err := os.ReadFile(filepath.Join(dir, "clients"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -121,7 +123,9 @@ func resolveToken(envToken, file string) (string, error) {
 		return "", err
 	}
 	buf := make([]byte, 32)
-	rand.Read(buf) // Go 1.24 からエラーを返さない (失敗したらプロセスごと落ちる)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
 	t := base64.RawURLEncoding.EncodeToString(buf)
 	return t, writePrivate(file, []byte(t+"\n"))
 }
@@ -212,10 +216,15 @@ func (b *Bridge) pair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 403, map[string]string{"error": b.msg.t("the certificate does not match the client", "証明書が名乗りと違います")})
 		return
 	}
+	// AGENT_PAIR_TOKEN に短い合言葉を渡されても総当たりしにくいよう、外れは 1 本ずつ failDelay 待たせる
+	p.tryMu.Lock()
 	if !hmac.Equal([]byte(*body.Proof), []byte(pairProof(p.token, "client", p.fingerprint, client))) {
+		time.Sleep(p.failDelay)
+		p.tryMu.Unlock()
 		writeJSON(w, 403, map[string]string{"error": b.msg.t("wrong pairing token", "合言葉が違います")})
 		return
 	}
+	p.tryMu.Unlock()
 	p.mu.Lock()
 	added := !p.clients[client]
 	var err error

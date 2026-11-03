@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // denpa 役のクライアント。自分の証明書を出し、ブリッジの証明書は確かめない (覚えるのは組んだ後の denpa の仕事)
@@ -35,6 +37,7 @@ func setupTLS(t *testing.T, dir, envToken string) (*Pairing, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.failDelay = 50 * time.Millisecond
 	b, err := NewBridge(Config{ChannelsFile: filepath.Join(t.TempDir(), "channels.json"), Version: "test", Pairing: p})
 	if err != nil {
 		t.Fatal(err)
@@ -166,5 +169,24 @@ func TestCertificateShape(t *testing.T) {
 	}
 	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 合言葉の外れは 1 本ずつ待たせるので、並べて送っても速くならない
+func TestWrongProofsAreSerialized(t *testing.T) {
+	p, base := setupTLS(t, t.TempDir(), "")
+	c, d := denpaClient(t)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { postPair(t, c, base, d, "wrong") })
+	}
+	wg.Wait()
+	if elapsed := time.Since(start); elapsed < 4*p.failDelay {
+		t.Fatalf("wrong proofs must wait one by one: %v", elapsed)
+	}
+	// 正しい合言葉は外れの後でも組める
+	if status, _ := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d)); status != 200 {
+		t.Fatalf("pair after failures: %d", status)
 	}
 }
