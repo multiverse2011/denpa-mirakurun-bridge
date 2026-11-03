@@ -137,3 +137,7 @@ MIRAKURUN_URL=http://mirakurun.lan:40772 ./denpa-mirakurun-bridge
 ```sh
 go test -race ./...
 ```
+
+## ライセンス
+
+[Apache License 2.0](LICENSE)
