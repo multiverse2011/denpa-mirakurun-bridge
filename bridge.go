@@ -268,6 +268,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 func (b *Bridge) ours() map[string]*active {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.oursLocked()
+}
+
+func (b *Bridge) oursLocked() map[string]*active {
 	m := map[string]*active{}
 	for a := range b.active {
 		if a.mkUserID != "" {
@@ -330,10 +334,10 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 // 番組表・ロゴ・スキャンに新しくチューナーを取らせてよいか。選ぶのは Mirakurun で、ここは取りに行かせるかだけ決める。
 // 優先度 0 以上の利用者だけを塞いでいるとみなす (Mirakurun 自身の番組表取得 -1 は誰にでも取り上げられる)。
 func (b *Bridge) keylessMayTune(ctx context.Context, typ, mkChannel string) (bool, error) {
-	// 自分の利用者は Mirakurun に聞く前に写す。後で写すと、聞いているあいだに pending から active へ移ったものが
-	// どちらにも載らず、上限を超えて通してしまう
-	mine := b.ours()
+	// 自分の利用者と pending は Mirakurun に聞く前に、同じロックの中で写す。別々に写すと pending から active へ
+	// 移ったものがどちらにも載らない (上限を超える) か、両方に載る (偽の 409) ことがある
 	b.mu.Lock()
+	mine := b.oursLocked()
 	pending := slices.Collect(maps.Keys(b.pending))
 	b.mu.Unlock()
 	var list []mkTuner
@@ -503,8 +507,8 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		mkUserID: res.Header.Get("X-Mirakurun-Tuner-User-ID"), cancel: cancel}
 	b.mu.Lock()
 	b.active[me] = struct{}{}
+	delete(b.pending, asking) // active への移し替えは 1 回のロックで (keylessMayTune の写しと食い違わないように)
 	b.mu.Unlock()
-	donePending()
 	defer func() {
 		b.mu.Lock()
 		delete(b.active, me)
