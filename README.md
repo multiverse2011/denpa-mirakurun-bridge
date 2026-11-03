@@ -135,3 +135,9 @@ MIRAKURUN_URL=http://mirakurun.lan:40772 ./denpa-mirakurun-bridge
 ```sh
 go test -race ./...
 ```
+
+Issue・PR 歓迎。PR には自動でレビューコメントが付く（フォークからの PR はメンテナが確認してから）。
+
+## ライセンス
+
+[Apache License 2.0](LICENSE)
