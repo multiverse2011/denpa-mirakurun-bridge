@@ -593,6 +593,9 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 		err = os.Rename(b.cfg.ChannelsFile+".tmp", b.cfg.ChannelsFile)
 	}
 	if err == nil {
+		err = syncDir(filepath.Dir(b.cfg.ChannelsFile))
+	}
+	if err == nil {
 		b.mu.Lock()
 		b.setStored(next)
 		b.mu.Unlock()
@@ -621,6 +624,19 @@ func writeSynced(name string, data []byte, perm os.FileMode) error {
 		err = f.Sync()
 	}
 	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// rename もディスクへ落とす。落とさないと 200 を返した保存が電源断で前の中身に戻りうる
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
 		err = cerr
 	}
 	return err
