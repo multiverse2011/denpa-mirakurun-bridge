@@ -152,3 +152,6 @@ go test -race ./...
 ## ライセンス
 
 [Apache License 2.0](LICENSE)
+
+ただし [tls.go](tls.go) だけは denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
+このファイルを直して配るなら、そのファイルは MPL-2.0 で公開してください。
