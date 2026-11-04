@@ -49,6 +49,7 @@ var (
 type testEnv struct {
 	mk   *mockMirakurun
 	base string
+	b    *Bridge
 }
 
 // tweak は Bridge が動き出す前に時間などを縮める
@@ -76,7 +77,7 @@ func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorit
 		srv.CloseClientConnections()
 		srv.Close()
 	})
-	return testEnv{mk, srv.URL}
+	return testEnv{mk, srv.URL, b}
 }
 
 type opened struct {
@@ -645,5 +646,68 @@ func TestPutChannelsReplacesOnlyScannedTypes(t *testing.T) {
 	}
 	if got := names(again.stored); !slices.Equal(got, want) {
 		t.Fatal(got)
+	}
+}
+
+// 止まれの合図のあとも、録画の選局が終わるまで待つ。ライブなどほかの利用者は待たない (denpa のエージェントの Drain と同じ)
+func TestDrainWaitsOnlyForRecordings(t *testing.T) {
+	e := setup(t, twoGR, grChannels, "", 9, func(b *Bridge) { b.drainPoll = 10 * time.Millisecond })
+	drained := func(limit time.Duration) chan struct{} {
+		done := make(chan struct{})
+		go func() { e.b.Drain(limit); close(done) }()
+		return done
+	}
+
+	live := open(t, e.base, q("GR", "T27", "9", "live a"))
+	select {
+	case <-drained(time.Minute):
+	case <-time.After(time.Second):
+		t.Fatal("ライブを待っています")
+	}
+
+	rec := open(t, e.base, q("GR", "T21", "10", "rec 1"))
+	done := drained(time.Minute)
+	select {
+	case <-done:
+		t.Fatal("録画の途中で止まりました")
+	case <-time.After(200 * time.Millisecond):
+	}
+	rec.cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("録画が終わっても止まりません")
+	}
+	live.cancel()
+
+	// 上限を過ぎたら待たない (見に行く間隔が長くても上限で抜ける)
+	e.b.drainPoll = time.Minute
+	open(t, e.base, q("GR", "T21", "10", "rec"))
+	start := time.Now()
+	e.b.Drain(100 * time.Millisecond)
+	if d := time.Since(start); d < 100*time.Millisecond || d > time.Second {
+		t.Fatal(d)
+	}
+}
+
+// 止まるときは SSE をこちらから閉じる。denpa は開きっぱなしにするので、閉じないと Shutdown が期限まで待つ
+func TestStopClosesEvents(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	res, err := http.Get(e.base + "/denpa/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	ended := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, res.Body)
+		ended <- err
+	}()
+	e.b.Stop()
+	e.b.Stop() // Shutdown を二度呼んでも落ちない
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("SSE が閉じません")
 	}
 }

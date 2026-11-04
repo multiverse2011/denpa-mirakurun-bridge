@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -45,6 +46,12 @@ func run() error {
 	if err != nil || keylessTuners < 0 {
 		return errors.New(msg.t("KEYLESS_TUNERS must be an integer of 0 or more: %s", "KEYLESS_TUNERS は 0 以上の整数です: %s", os.Getenv("KEYLESS_TUNERS")))
 	}
+	// denpa のエージェントと同じ既定 (6 時間)。0 なら待たない
+	shutdownWait, err := strconv.ParseInt(env("SHUTDOWN_WAIT", "21600000"), 10, 64)
+	// 上限は time.Duration に収まる長さ (超えると負に回って待たなくなる)
+	if err != nil || shutdownWait < 0 || shutdownWait > math.MaxInt64/int64(time.Millisecond) {
+		return errors.New(msg.t("SHUTDOWN_WAIT must be milliseconds of 0 or more: %s", "SHUTDOWN_WAIT は 0 以上のミリ秒です: %s", os.Getenv("SHUTDOWN_WAIT")))
+	}
 	var allowed []string
 	if v := env("ALLOWED_HOSTS", ""); v != "" {
 		allowed = strings.Split(v, ",")
@@ -82,14 +89,23 @@ func run() error {
 	addr := net.JoinHostPort(env("HOST", "127.0.0.1"), port)
 	// WriteTimeout は配信を切るので付けない (書き込みの期限は配信ごとに Bridge が付ける)
 	srv := &http.Server{Addr: addr, Handler: b, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
-	go b.Watch(ctx)
+	srv.RegisterOnShutdown(b.Stop)
+	// 録画を待つ間も tuners の通知を流すので、止まれの合図 (ctx) では止めない
+	watch, stopWatch := context.WithCancel(context.Background())
+	defer stopWatch()
+	go b.Watch(watch)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
+		stop() // 録画を待つ間に 2 度目の合図が来たら、ふつうに落ちる
+		until := time.Now().Add(time.Duration(shutdownWait) * time.Millisecond)
+		b.Drain(time.Until(until))
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
+		// Drain が 0 を見てからリスナーが閉じるまでに始まった録画も、ここで待つ (Shutdown は流れている応答を切らない)
+		b.Drain(time.Until(until))
 	}()
 	b.logf("listening on %s → Mirakurun %s", "listening on %s → Mirakurun %s", addr, mirakurun)
 	serve := srv.ListenAndServe
