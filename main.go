@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -47,7 +48,8 @@ func run() error {
 	}
 	// denpa のエージェントと同じ既定 (6 時間)。0 なら待たない
 	shutdownWait, err := strconv.ParseInt(env("SHUTDOWN_WAIT", "21600000"), 10, 64)
-	if err != nil || shutdownWait < 0 {
+	// 上限は time.Duration に収まる長さ (超えると負に回って待たなくなる)
+	if err != nil || shutdownWait < 0 || shutdownWait > math.MaxInt64/int64(time.Millisecond) {
 		return errors.New(msg.t("SHUTDOWN_WAIT must be milliseconds of 0 or more: %s", "SHUTDOWN_WAIT は 0 以上のミリ秒です: %s", os.Getenv("SHUTDOWN_WAIT")))
 	}
 	var allowed []string
@@ -96,6 +98,7 @@ func run() error {
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
+		stop() // 録画を待つ間に 2 度目の合図が来たら、ふつうに落ちる
 		b.Drain(time.Duration(shutdownWait) * time.Millisecond)
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
