@@ -598,7 +598,8 @@ func TestDrainWaitsOnlyForRecordings(t *testing.T) {
 	}
 	live.cancel()
 
-	// 上限を過ぎたら待たない
+	// 上限を過ぎたら待たない (見に行く間隔が長くても上限で抜ける)
+	e.b.drainPoll = time.Minute
 	open(t, e.base, q("GR", "T21", "10", "rec"))
 	start := time.Now()
 	e.b.Drain(100 * time.Millisecond)

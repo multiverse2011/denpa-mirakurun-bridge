@@ -787,7 +787,7 @@ func (b *Bridge) Drain(limit time.Duration) {
 	b.logf("asked to stop; waiting for recordings to finish (up to %v)", "止まれの合図。録画が終わるまで待ちます (上限 %v)", limit)
 	until := time.Now().Add(limit)
 	for b.recording.Load() > 0 && time.Now().Before(until) {
-		time.Sleep(b.drainPoll)
+		time.Sleep(min(b.drainPoll, time.Until(until))) // 上限を越えて待たない
 	}
 	if b.recording.Load() > 0 {
 		b.logf("gave up waiting; stopping", "待ちきれないので畳みます")

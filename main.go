@@ -99,10 +99,13 @@ func run() error {
 		defer close(stopped)
 		<-ctx.Done()
 		stop() // 録画を待つ間に 2 度目の合図が来たら、ふつうに落ちる
-		b.Drain(time.Duration(shutdownWait) * time.Millisecond)
+		until := time.Now().Add(time.Duration(shutdownWait) * time.Millisecond)
+		b.Drain(time.Until(until))
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
+		// Drain が 0 を見てからリスナーが閉じるまでに始まった録画も、ここで待つ (Shutdown は流れている応答を切らない)
+		b.Drain(time.Until(until))
 	}()
 	b.logf("listening on %s → Mirakurun %s", "listening on %s → Mirakurun %s", addr, mirakurun)
 	serve := srv.ListenAndServe
