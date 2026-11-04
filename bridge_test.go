@@ -622,6 +622,7 @@ func TestStopClosesEvents(t *testing.T) {
 		ended <- err
 	}()
 	e.b.Stop()
+	e.b.Stop() // Shutdown を二度呼んでも落ちない
 	select {
 	case <-ended:
 	case <-time.After(time.Second):

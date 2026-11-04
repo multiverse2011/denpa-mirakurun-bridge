@@ -176,6 +176,7 @@ type Bridge struct {
 
 	recording atomic.Int32  // 開いている録画の選局 (Mirakurun の応答待ちも数える)
 	stopping  chan struct{} // 閉じたら SSE の購読者を帰す
+	stopOnce  sync.Once     // Shutdown を呼ぶたびに Stop も呼ばれるので、閉じるのは一度だけ
 
 	stallTimeout time.Duration // Mirakurun から何も来ないまま待つ長さ
 	writeTimeout time.Duration // 受け手が読まないまま待つ長さ
@@ -797,7 +798,7 @@ func (b *Bridge) Drain(limit time.Duration) {
 }
 
 // Stop は SSE の購読者を帰す。denpa は開きっぱなしにするので、帰さないと http.Server.Shutdown が期限まで待つ
-func (b *Bridge) Stop() { close(b.stopping) }
+func (b *Bridge) Stop() { b.stopOnce.Do(func() { close(b.stopping) }) }
 
 // Mirakurun のチューナーの出来事を tuners として流す。中身は読まない (denpa が /denpa/tuners を読み直す)。
 // 1 回の選局で出来事は続けて届くので、eventDelay のあいだはまとめて 1 回にする
