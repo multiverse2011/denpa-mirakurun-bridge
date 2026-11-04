@@ -558,3 +558,10 @@ func TestSSEHeartbeat(t *testing.T) {
 		t.Fatal("死活確認が来ません")
 	}
 }
+
+func TestBadMirakurunURL(t *testing.T) {
+	_, err := NewBridge(Config{MirakurunURL: "http://[::1", ChannelsFile: filepath.Join(t.TempDir(), "channels.json")})
+	if err == nil || !strings.Contains(err.Error(), "MIRAKURUN_URL") {
+		t.Fatalf("want MIRAKURUN_URL error, got %v", err)
+	}
+}
