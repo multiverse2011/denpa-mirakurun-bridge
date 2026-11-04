@@ -193,6 +193,9 @@ func NewBridge(cfg Config) (*Bridge, error) {
 		heartbeat:    30 * time.Second,
 		eventDelay:   100 * time.Millisecond,
 	}
+	if _, err := url.Parse(cfg.MirakurunURL); err != nil {
+		return nil, errors.New(b.msg.t("MIRAKURUN_URL is not a URL: %v", "MIRAKURUN_URL が URL として読めません: %v", err))
+	}
 	data, err := os.ReadFile(cfg.ChannelsFile)
 	if err == nil {
 		var raw []json.RawMessage
@@ -244,7 +247,10 @@ func (b *Bridge) emit(name string) {
 func (b *Bridge) mk(ctx context.Context, path string, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.MirakurunURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.MirakurunURL+path, nil)
+	if err != nil {
+		return err
+	}
 	res, err := b.client.Do(req)
 	if err != nil {
 		return err
@@ -464,8 +470,12 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	mkPriority := mapPriority(priority, b.cfg.PriorityMap)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s/api/channels/%s/%s/stream?decode=%s", b.cfg.MirakurunURL, typ, url.PathEscape(mkChannel), decode), nil)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
 	req.Header.Set("X-Mirakurun-Priority", strconv.Itoa(mkPriority))
 	req.Header.Set("User-Agent", fmt.Sprintf("denpa-mirakurun-bridge/%s (%s)", b.cfg.Version, use))
 	// 何も送ってこない Mirakurun・読まない受け手に、チューナーをいつまでも握らせない (応答ヘッダ待ちも含む)
@@ -770,7 +780,10 @@ func (b *Bridge) Watch(ctx context.Context) {
 	wait := time.Second
 	for ctx.Err() == nil {
 		err := func() error {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.MirakurunURL+"/api/events/stream?resource=tuner", nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.MirakurunURL+"/api/events/stream?resource=tuner", nil)
+			if err != nil {
+				return err
+			}
 			res, err := b.client.Do(req)
 			if err != nil {
 				return err
