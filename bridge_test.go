@@ -191,7 +191,8 @@ func TestSameChannelShared(t *testing.T) {
 	users, _ := json.Marshal(tuners[0]["users"])
 	if string(ch) != `{"channel":"T27","type":"GR"}` ||
 		string(users) != `[{"priority":10,"use":"rec 1"},{"priority":9,"use":"live a"}]` ||
-		tuners[0]["rank"] != 0.0 || tuners[1]["rank"] != 1.0 || tuners[1]["channel"] != nil {
+		tuners[0]["rank"] != 0.0 || tuners[1]["rank"] != 1.0 || tuners[1]["channel"] != nil ||
+		tuners[0]["pin"] != "T0" || tuners[1]["pin"] != "T1" {
 		t.Fatalf("tuners: %s %s %v", ch, users, tuners)
 	}
 }
