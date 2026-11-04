@@ -193,8 +193,10 @@ func NewBridge(cfg Config) (*Bridge, error) {
 		heartbeat:    30 * time.Second,
 		eventDelay:   100 * time.Millisecond,
 	}
-	if _, err := url.Parse(cfg.MirakurunURL); err != nil {
-		return nil, errors.New(b.msg.t("MIRAKURUN_URL is not a URL: %v", "MIRAKURUN_URL が URL として読めません: %v", err))
+	// scheme を書き忘れた "mirakurun:40772" も url.Parse は通す (scheme が mirakurun になる)
+	if u, err := url.Parse(cfg.MirakurunURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, errors.New(b.msg.t("MIRAKURUN_URL must be an http(s) URL such as http://mirakurun:40772: %s",
+			"MIRAKURUN_URL は http://mirakurun:40772 のような http(s) の URL です: %s", cfg.MirakurunURL))
 	}
 	data, err := os.ReadFile(cfg.ChannelsFile)
 	if err == nil {

@@ -38,7 +38,7 @@ func setupTLS(t *testing.T, dir, envToken string) (*Pairing, string) {
 		t.Fatal(err)
 	}
 	p.failDelay = 50 * time.Millisecond
-	b, err := NewBridge(Config{ChannelsFile: filepath.Join(t.TempDir(), "channels.json"), Version: "test", Pairing: p})
+	b, err := NewBridge(Config{MirakurunURL: "http://127.0.0.1:1", ChannelsFile: filepath.Join(t.TempDir(), "channels.json"), Version: "test", Pairing: p})
 	if err != nil {
 		t.Fatal(err)
 	}
