@@ -572,3 +572,78 @@ func TestBadMirakurunURL(t *testing.T) {
 		}
 	}
 }
+
+// scanned の種別だけ入れ替え、ほかの種別と知らない項目はそのまま残す (denpa の Config.SaveChannels と同じ)。再起動しても残る
+func TestPutChannelsReplacesOnlyScannedTypes(t *testing.T) {
+	var file string
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { file = b.cfg.ChannelsFile })
+	put := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", e.base+"/denpa/channels", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	names := func(raw []json.RawMessage) []string {
+		var out []string
+		for _, r := range raw {
+			var c struct{ Type, Channel string }
+			_ = json.Unmarshal(r, &c)
+			out = append(out, c.Type+" "+c.Channel)
+		}
+		slices.Sort(out)
+		return out
+	}
+	get := func() []json.RawMessage {
+		t.Helper()
+		res, err := http.Get(e.base + "/denpa/channels")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var raw []json.RawMessage
+		if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	if s := put(`{"scanned":["GR"],"channels":[{"type":"GR","channel":"T27"},{"type":"GR","channel":"T21"}]}`); s != 200 {
+		t.Fatal(s)
+	}
+	if s := put(`{"scanned":["BS"],"channels":[{"type":"BS","channel":"BS15:16626","extra":{"kept":true}}]}`); s != 200 {
+		t.Fatal(s)
+	}
+	if s := put(`{"scanned":["GR"],"channels":[{"type":"GR","channel":"T16"}]}`); s != 200 {
+		t.Fatal(s)
+	}
+	want := []string{"BS BS15:16626", "GR T16"}
+	if got := names(get()); !slices.Equal(got, want) {
+		t.Fatal(got)
+	}
+	// 空や scanned 無しは断り、預かったものを消さない
+	for _, body := range []string{`{"scanned":["GR"],"channels":[]}`, `{"channels":[{"type":"GR","channel":"T27"}]}`} {
+		if s := put(body); s != 400 {
+			t.Fatal(body, s)
+		}
+	}
+	raw := get()
+	if got := names(raw); !slices.Equal(got, want) {
+		t.Fatal(got)
+	}
+	if !slices.ContainsFunc(raw, func(r json.RawMessage) bool { return strings.Contains(string(r), `"extra":{"kept":true}`) }) {
+		t.Fatalf("unknown fields were dropped: %s", raw)
+	}
+
+	again, err := NewBridge(Config{MirakurunURL: "http://127.0.0.1:1", ChannelsFile: file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(again.stored); !slices.Equal(got, want) {
+		t.Fatal(got)
+	}
+}
