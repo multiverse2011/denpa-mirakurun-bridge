@@ -1,23 +1,26 @@
 # denpa-mirakurun-bridge
 
-[denpa](https://github.com/danything/denpa) のチューナーエージェント API (`/denpa/*`) を [Mirakurun](https://github.com/Chinachu/Mirakurun) に中継するブリッジ。
-denpa 付属のエージェントを置き換え、他のアプリと Mirakurun を共有する。
+[denpa](https://github.com/danything/denpa) のチューナーエージェント API (`/denpa/*`) を [Mirakurun](https://github.com/Chinachu/Mirakurun) へ中継するブリッジです。
+denpa 付属のエージェントの代わりに使うことで、denpa と他のアプリが同じ Mirakurun のチューナーを共有できます。
 
-```text
-他のアプリ ─────────────┐
-                        ├→ Mirakurun → チューナー
-denpa → このブリッジ ───┘
+```mermaid
+flowchart LR
+  other[他のアプリ] --> mirakurun[Mirakurun] --> tuner[チューナー]
+  denpa --> bridge[このブリッジ] --> mirakurun
 ```
+
+## 必要なもの
+
+- denpa v2.28.0 以降 (v2.27.0 以前で使う場合は「[古い denpa と HTTP で接続する](#古い-denpa-と-http-で接続する)」を参照)
+- Mirakurun
+  - `channels.yml` では、地上波を物理チャンネル番号 (`27`)、衛星を中継器の番号で始まる名前 (`BS15_0`・`CS2`) にしておく必要があります
+- Docker Compose (Go でビルドして直接動かすこともできます。「[開発](#開発)」を参照)
 
 ## 導入
 
-- denpa (v2.28.0 以降) とは TLS で繋ぎ、組んだ denpa (クライアント証明書) にしか答えない (denpa の [docs/agent.md](https://github.com/danything/denpa/blob/main/docs/agent.md)「denpa とは TLS で組む」と同じ)。組むには合言葉 (`AGENT_PAIR_TOKEN`) を両方に渡す
-- v2.27.0 以前の denpa は HTTP でしか繋がらないため、`AGENT_TLS: "0"` を足す。この場合は認証なしで復号済みの TS を返すので、アクセスを denpa に限定する
-- TS の LAN 転送を 1 回に抑えるため、denpa と同じマシンで動かす
-
 ### 既存の Mirakurun を使う場合
 
-denpa の `compose.override.yml` で `tuner-agent` を差し替える。denpa 側の設定変更は不要 (denpa の compose が `.env` の `AGENT_PAIR_TOKEN` を `tuner-agent` と denpa の `TUNER_AGENT_URL` の両方に渡している)。
+denpa の `compose.override.yml` で `tuner-agent` を差し替えます。denpa の compose は `.env` の `AGENT_PAIR_TOKEN` を `tuner-agent` と denpa の `TUNER_AGENT_URL` の両方に渡すため、denpa 側の設定を変える必要はありません。
 
 ```yaml
 services:
@@ -37,7 +40,7 @@ volumes:
 
 ### Mirakurun も同時に起動する場合
 
-以下を `compose.yml` に保存し、同じ場所に合言葉を書いた `.env` を作る。
+以下の内容を `compose.yml` として保存し、同じディレクトリに合言葉を書いた `.env` を作ります。
 
 ```sh
 echo "AGENT_PAIR_TOKEN=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')" > .env
@@ -98,45 +101,59 @@ volumes:
   denpa-library:
 ```
 
-Mirakurun のデバイス・カードリーダー・`network_mode: host` などは [Mirakurun の compose](https://github.com/Chinachu/Mirakurun/blob/master/docker/docker-compose.yml)、denpa の設定は [denpa の compose.prod.yml](https://github.com/danything/denpa/blob/main/compose.prod.yml) を参照。
+Mirakurun のデバイスやカードリーダー、`network_mode: host` などの設定は [Mirakurun の compose](https://github.com/Chinachu/Mirakurun/blob/master/docker/docker-compose.yml) を、denpa の設定は [denpa の compose.prod.yml](https://github.com/danything/denpa/blob/main/compose.prod.yml) を参照してください。
 
-## 環境変数
+## 設定
+
+設定はすべて環境変数で行います。
 
 | 環境変数 | 既定値 | 説明 |
 | --- | --- | --- |
-| `MIRAKURUN_URL` | `http://127.0.0.1:40772` | Mirakurun の接続先 |
-| `HOST` / `PORT` | `127.0.0.1` / `25252` | Docker イメージでは `HOST=0.0.0.0` |
-| `PRIORITY_MAP` | なし | denpa から Mirakurun への優先度変換 (`10:2,9:1`)。未指定の値はそのまま、負の値は 0 |
-| `KEYLESS_TUNERS` | `1` | 番組表・ロゴ取得・スキャンで新規に使用できるチューナー数 |
-| `CHANNELS_FILE` | `data/channels.json` | denpa から受け取るチャンネル一覧。Docker イメージでは `/config/channels.json` |
-| `AGENT_TLS` | `1` | `0` で TLS を使わず HTTP で待ち受ける (v2.27.0 以前の denpa 向け) |
-| `AGENT_PAIR_TOKEN` | なし | denpa と組むときの合言葉。未指定なら `CHANNELS_FILE` の隣の `tls/pair-token` に作る |
-| `ALLOWED_HOSTS` | なし | `AGENT_TLS=0` のとき、IP アドレス・`localhost`・ドットなしの名前・`.local` など以外でアクセスする際の許可ホスト |
-| `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョン。denpa と揃えると不一致の通知を抑制 |
-| `MESSAGE_LANG` | `ja` | エラー応答とログの言語 (`ja` / `en`) |
+| `MIRAKURUN_URL` | `http://127.0.0.1:40772` | Mirakurun の接続先です |
+| `HOST` / `PORT` | `127.0.0.1` / `25252` | 待ち受けるアドレスとポートです。Docker イメージでは `HOST=0.0.0.0` です |
+| `PRIORITY_MAP` | なし | denpa の優先度を Mirakurun の優先度に変換する対応表です (例: `10:2,9:1`)。表にない値はそのまま渡し、負の値は 0 にします |
+| `KEYLESS_TUNERS` | `1` | 番組表・ロゴの取得やチャンネルスキャンで、新たに使ってよいチューナーの数です |
+| `CHANNELS_FILE` | `data/channels.json` | denpa から受け取ったチャンネル一覧の保存先です。Docker イメージでは `/config/channels.json` です |
+| `AGENT_TLS` | `1` | `0` にすると TLS を使わず HTTP で待ち受けます (v2.27.0 以前の denpa 向け) |
+| `AGENT_PAIR_TOKEN` | なし | denpa と組むための合言葉です。未指定なら自動で生成し、`CHANNELS_FILE` と同じ場所の `tls/pair-token` に保存します |
+| `ALLOWED_HOSTS` | なし | `AGENT_TLS=0` のときに受け付けるホスト名です。IP アドレス・`localhost`・ドットを含まない名前・`.local` などは指定しなくても受け付けます |
+| `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョンです。denpa のバージョンと揃えると、不一致の通知が出なくなります |
+| `MESSAGE_LANG` | `ja` | エラー応答とログの言語です (`ja` / `en`) |
 
-## 動作と制約
+## denpa との接続 (TLS)
 
-- **TLS**: 鍵・自己署名の証明書・合言葉・組んだ denpa の指紋を `CHANNELS_FILE` の隣の `tls/` (Docker イメージでは `/config/tls`) に置く。証明書は作り直さない。まだ誰とも組んでいなければ、起動時に標準出力へ組むための URL (`https://<ホスト名>:25252#pair=<合言葉>`) を出す。合言葉を変えるには `pair-token` を消して再起動し、組んだ denpa を外すには `clients` からその行を消して再起動する。TLS では Host 名と `Content-Type` を見ない (ブラウザはクライアント証明書を出せず繋げないため)
+denpa とは TLS で接続し、組んだ denpa (クライアント証明書で識別) からの要求にだけ応答します。仕組みは denpa の [docs/agent.md](https://github.com/danything/denpa/blob/main/docs/agent.md) の「denpa とは TLS で組む」と同じで、組むには同じ合言葉 (`AGENT_PAIR_TOKEN`) を両方に設定します。
 
-- **優先度**: denpa の値を `PRIORITY_MAP` で変換し、`X-Mirakurun-Priority` に渡す。チューナーの共有・割り込みは Mirakurun が制御する。503 は 409 (空き待ち) に変換する
-- **ストリーム終了**: Mirakurun 側で終了した場合は、denpa が正常終了と判定しないよう接続を切断する。`after` による引き継ぎ時のみ正常終了する
-- **チャンネル**: 地上波は物理チャンネル番号 (`T27` ↔ `27`)。衛星は Mirakurun が TSID を返さないため、denpa から受け取ったチャンネルのサービス ID で照合する (`BS15:16625` ↔ `BS15_0` など)
-- **`KEYLESS_TUNERS`**: `epg`・`logo`・`scan` の要求は、優先度 0 以上で使用中のチャンネルを共有できる。新規のチューナー使用は上限までとし、BS と CS は合算する。復号は無効 (`decode=0`)
-- **途切れの検出**: Mirakurun から 30 秒データが来ない、または denpa が 30 秒読まない配信は切断し、チューナーを解放する。`/denpa/events` は 30 秒ごとに空のコメント行を送り、無通信による切断を防ぐ
-- **`rank`**: Mirakurun の `tuners.yml` の定義順
-- **カード・復号**: 復号は Mirakurun の decoder が担当する。`/denpa/card` はカードリーダーなしとして正常応答し、`/denpa/decode` は 501 を返す
-- `PUT /denpa/tuners` は 405 (チューナーは Mirakurun で設定する)
+- 鍵、自己署名の証明書、合言葉、組んだ denpa の証明書の指紋は、`CHANNELS_FILE` と同じ場所の `tls/` (Docker イメージでは `/config/tls`) に保存します。証明書は一度作ったら作り直しません
+- まだどの denpa とも組んでいなければ、起動時に組むための URL (`https://<ホスト名>:25252#pair=<合言葉>`) を標準出力に表示します
+- 合言葉を変えるには、`pair-token` を削除して再起動します
+- 組んだ denpa を外すには、`clients` からその行を削除して再起動します
+- TLS ではブラウザがクライアント証明書を提示できず接続できないため、Host ヘッダーと `Content-Type` は検査しません
 
-- denpa は他のアプリの予約を把握できない。競合時は優先度の高い要求が優先される
-- Mirakurun は空きがないと約 12.5 秒再試行してから 503 を返すため、その間 denpa は待機する
-- 地上波と衛星の兼用チューナーがあると、denpa の予約の割り振りと Mirakurun の割り当てがずれることがある
-- Mirakurun の `channels.yml` は、地上波が物理チャンネル番号 (`27`)、衛星が中継器の番号で始まる名前 (`BS15_0`・`CS2`) である必要がある
-- 録画後の復号には非対応
+### 古い denpa と HTTP で接続する
+
+v2.27.0 以前の denpa は HTTP でしか接続できないため、`AGENT_TLS: "0"` を追加します。この場合は認証なしで復号済みの TS を返すので、denpa 以外からアクセスできないようにしてください。Host ヘッダーは `ALLOWED_HOSTS` で制限します。
+
+## 仕組み
+
+- **優先度**: denpa の優先度を `PRIORITY_MAP` で変換し、`X-Mirakurun-Priority` として渡します。チューナーの共有や割り込みは Mirakurun に任せます。Mirakurun の 503 は 409 (空き待ち) に変換して返します
+- **チャンネル**: 地上波は物理チャンネル番号で対応づけます (`T27` ↔ `27`)。衛星は Mirakurun が TSID を返さないため、denpa から受け取ったチャンネルのサービス ID で照合します (`BS15:16625` ↔ `BS15_0` など)
+- **番組表・ロゴ・スキャン**: `epg`・`logo`・`scan` の要求は、優先度 0 以上で使用中のチャンネルに相乗りできます。新たにチューナーを使うのは `KEYLESS_TUNERS` の数までで、BS と CS は合わせて数えます。これらの要求では復号しません (`decode=0`)
+- **ストリームの終了**: Mirakurun 側でストリームが終わったときは、denpa が正常終了と誤認しないよう接続を切断します。正常終了として扱うのは `after` で次の配信に引き継ぐときだけです
+- **途切れの検出**: Mirakurun から 30 秒間データが届かない配信や、denpa が 30 秒間読み出さない配信は切断し、チューナーを解放します。`/denpa/events` は無通信で切断されないよう、30 秒ごとに空のコメント行を送ります
+- **カードと復号**: 復号は Mirakurun の decoder に任せます。`/denpa/card` はカードリーダーがないものとして正常に応答し、`/denpa/decode` は 501 を返します
+- **チューナー**: `rank` は Mirakurun の `tuners.yml` に書かれた順番です。チューナーは Mirakurun で設定するため、`PUT /denpa/tuners` は 405 を返します
+
+## 制限事項
+
+- denpa は他のアプリの予約を把握できません。チューナーが競合したときは優先度の高い要求が勝ちます
+- Mirakurun は空きがないと約 12.5 秒再試行してから 503 を返すため、その間 denpa は待たされます
+- 地上波と衛星の兼用チューナーがあると、denpa が想定したチューナーと Mirakurun が実際に割り当てるチューナーが食い違うことがあります
+- 録画後の復号には対応していません
 
 ## 開発
 
-ビルド・実行:
+ビルドと実行:
 
 ```sh
 go build
@@ -153,5 +170,5 @@ go test -race ./...
 
 [Apache License 2.0](LICENSE)
 
-ただし [tls.go](tls.go) だけは denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
-このファイルを直して配るなら、そのファイルは MPL-2.0 で公開してください。
+ただし [tls.go](tls.go) は denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移植したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
+このファイルを改変して配布する場合は、そのファイルを MPL-2.0 で公開してください。
