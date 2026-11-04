@@ -29,6 +29,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB には bubblewrap が要る。action は allowed_non_write_users 設定時しか入れないので自前で入れる
+      - name: bubblewrap を入れる
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat
+          # Ubuntu 24.04 は AppArmor で非特権 user namespace を禁じており、bwrap が動かない
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       # Claude Code を Kimi Code の Anthropic 互換エンドポイントへ向けて動かす
       - uses: anthropics/claude-code-action@v1
         env:
@@ -39,6 +47,9 @@ jobs:
           ANTHROPIC_DEFAULT_SONNET_MODEL: kimi-for-coding
           ANTHROPIC_DEFAULT_HAIKU_MODEL: kimi-for-coding
           CLAUDE_CODE_SUBAGENT_MODEL: kimi-for-coding
+          # Bash ツールの子プロセスから KIMI_API_KEY などを消す。PR 経由のプロンプトインジェクションで
+          # `gh pr comment "$ANTHROPIC_API_KEY"` のように展開させても空になる (allowed_non_write_users 未設定だと既定で無効)
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 1
         with:
           anthropic_api_key: ${{ secrets.KIMI_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
