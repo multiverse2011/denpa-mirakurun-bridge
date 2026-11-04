@@ -69,7 +69,8 @@ services:
   tuner-agent:
     image: ghcr.io/multiverse2011/denpa-mirakurun-bridge:latest
     restart: unless-stopped
-    stop_grace_period: 10s
+    # 録画中は録画が終わるまで待ってから止まる (SHUTDOWN_WAIT)。足りないと待っている途中で kill される
+    stop_grace_period: 6h5m
     depends_on: [mirakurun]
     environment:
       MIRAKURUN_URL: http://mirakurun:40772
@@ -118,6 +119,7 @@ Mirakurun のデバイスやカードリーダー、`network_mode: host` など�
 | `AGENT_PAIR_TOKEN` | なし | denpa と組むための合言葉です。未指定なら自動で生成し、`CHANNELS_FILE` と同じ場所の `tls/pair-token` に保存します |
 | `ALLOWED_HOSTS` | なし | `AGENT_TLS=0` のときに受け付けるホスト名です。IP アドレス・`localhost`・ドットを含まない名前・`.local` などは指定しなくても受け付けます |
 | `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョンです。denpa のバージョンと揃えると、不一致の通知が出なくなります |
+| `SHUTDOWN_WAIT` | `21600000` (6 時間) | 録画中に止めようとしたとき、録画が終わるまで待つ上限 (ミリ秒) です。待つ間も要求は受け付けます。`0` なら待ちません。denpa のエージェントと同じです |
 | `MESSAGE_LANG` | `ja` | エラー応答とログの言語です (`ja` / `en`) |
 
 ## denpa との接続 (TLS)

@@ -174,10 +174,14 @@ type Bridge struct {
 	parsed    []DenpaChannel
 	logs      []logLine
 
+	recording atomic.Int32  // 開いている録画の選局 (Mirakurun の応答待ちも数える)
+	stopping  chan struct{} // 閉じたら SSE の購読者を帰す
+
 	stallTimeout time.Duration // Mirakurun から何も来ないまま待つ長さ
 	writeTimeout time.Duration // 受け手が読まないまま待つ長さ
 	heartbeat    time.Duration // SSE の死活確認の間隔
 	eventDelay   time.Duration // Mirakurun の通知をまとめる長さ
+	drainPoll    time.Duration // 止まる前に録画の終わりを見に行く間隔
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
@@ -192,6 +196,8 @@ func NewBridge(cfg Config) (*Bridge, error) {
 		writeTimeout: 30 * time.Second,
 		heartbeat:    30 * time.Second,
 		eventDelay:   100 * time.Millisecond,
+		drainPoll:    time.Second,
+		stopping:     make(chan struct{}),
 	}
 	if _, err := url.Parse(cfg.MirakurunURL); err != nil {
 		return nil, errors.New(b.msg.t("MIRAKURUN_URL is not a URL: %v", "MIRAKURUN_URL が URL として読めません: %v", err))
@@ -392,6 +398,11 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	typ, channel, use := q.Get("type"), q.Get("channel"), q.Get("use")
 	if use == "" {
 		use = "unknown"
+	}
+	// 見分け方は denpa のエージェントの TunerPool.Recording と同じ
+	if use == "rec" || strings.HasPrefix(use, "rec ") {
+		b.recording.Add(1)
+		defer b.recording.Add(-1)
 	}
 	priority, err := strconv.Atoi(q.Get("priority"))
 	if q.Get("priority") == "" {
@@ -681,6 +692,8 @@ func (b *Bridge) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-b.stopping:
+			return
 		case <-l.tuners:
 			ok = send("event: tuners\ndata: {}\n\n")
 		case <-l.channels:
@@ -764,6 +777,27 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
 }
+
+// Drain は録画の選局が全部終わるまで (limit まで) 待つ。その間もふだんどおり受け、止まる途中に来た録画も流す。
+// denpa は録画が終わるまで待ってから止まるので、流しているこちらが先に消えると録画が切れる (denpa のエージェントの Drain と同じ)
+func (b *Bridge) Drain(limit time.Duration) {
+	if limit <= 0 || b.recording.Load() == 0 {
+		return
+	}
+	b.logf("asked to stop; waiting for recordings to finish (up to %v)", "止まれの合図。録画が終わるまで待ちます (上限 %v)", limit)
+	until := time.Now().Add(limit)
+	for b.recording.Load() > 0 && time.Now().Before(until) {
+		time.Sleep(b.drainPoll)
+	}
+	if b.recording.Load() > 0 {
+		b.logf("gave up waiting; stopping", "待ちきれないので畳みます")
+	} else {
+		b.logf("recordings finished; stopping", "録画が終わったので畳みます")
+	}
+}
+
+// Stop は SSE の購読者を帰す。denpa は開きっぱなしにするので、帰さないと http.Server.Shutdown が期限まで待つ
+func (b *Bridge) Stop() { close(b.stopping) }
 
 // Mirakurun のチューナーの出来事を tuners として流す。中身は読まない (denpa が /denpa/tuners を読み直す)。
 // 1 回の選局で出来事は続けて届くので、eventDelay のあいだはまとめて 1 回にする
