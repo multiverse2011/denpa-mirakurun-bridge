@@ -39,6 +39,9 @@ jobs:
           ANTHROPIC_DEFAULT_SONNET_MODEL: kimi-for-coding
           ANTHROPIC_DEFAULT_HAIKU_MODEL: kimi-for-coding
           CLAUDE_CODE_SUBAGENT_MODEL: kimi-for-coding
+          # Bash ツールの子プロセスから KIMI_API_KEY などを消す。PR 経由のプロンプトインジェクションで
+          # `gh pr comment "$ANTHROPIC_API_KEY"` のように展開させても空になる (allowed_non_write_users 未設定だと既定で無効)
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 1
         with:
           anthropic_api_key: ${{ secrets.KIMI_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
