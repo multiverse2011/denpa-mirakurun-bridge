@@ -5,8 +5,8 @@ on:
     branches: [main]
     tags: ["v*"]
     paths-ignore: ["**.md"]
+  # 必須チェック (test) が md だけの PR で Expected のまま止まらないよう、PR はパスで絞らない
   pull_request:
-    paths-ignore: ["**.md"]
 
 permissions:
   contents: read
