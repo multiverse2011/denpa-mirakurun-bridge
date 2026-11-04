@@ -560,8 +560,15 @@ func TestSSEHeartbeat(t *testing.T) {
 }
 
 func TestBadMirakurunURL(t *testing.T) {
-	_, err := NewBridge(Config{MirakurunURL: "http://[::1", ChannelsFile: filepath.Join(t.TempDir(), "channels.json")})
-	if err == nil || !strings.Contains(err.Error(), "MIRAKURUN_URL") {
-		t.Fatalf("want MIRAKURUN_URL error, got %v", err)
+	for _, u := range []string{"http://[::1", "mirakurun:40772", "mirakurun.lan:40772", "ftp://mirakurun", "http://"} {
+		_, err := NewBridge(Config{MirakurunURL: u, ChannelsFile: filepath.Join(t.TempDir(), "channels.json")})
+		if err == nil || !strings.Contains(err.Error(), "MIRAKURUN_URL") {
+			t.Errorf("%s: want MIRAKURUN_URL error, got %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://mirakurun:40772", "https://mirakurun.lan", "http://[::1]:40772"} {
+		if _, err := NewBridge(Config{MirakurunURL: u, ChannelsFile: filepath.Join(t.TempDir(), "channels.json")}); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
 	}
 }
