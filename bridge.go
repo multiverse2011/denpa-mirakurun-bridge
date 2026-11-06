@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -398,6 +399,74 @@ func (b *Bridge) keylessMayTune(ctx context.Context, typ, mkChannel string) (boo
 	return held+len(waiting) < b.cfg.KeylessTuners, nil
 }
 
+// denpa の約束 2 (優先度の低い利用者しかいないチューナーは取り上げる) のうち、こちらの利用者どうしの分。
+// Mirakurun は相手の優先度が自分より小さいときしか取り上げないので、PRIORITY_MAP で同じ値に潰すと
+// ライブ (9) が番組表 (3) を待ち続ける。比べるのは denpa の優先度。空きか同じチャンネルの選局があれば何もしない。
+func (b *Bridge) preempt(ctx context.Context, typ, mkChannel string, priority int) error {
+	var list []mkTuner
+	if err := b.mk(ctx, "/api/tuners", &list); err != nil {
+		return err
+	}
+	mine := b.ours()
+	var victims []*active
+	lowest := 0
+	for _, t := range list {
+		if !t.IsAvailable || !slices.Contains(t.Types, typ) {
+			continue
+		}
+		var here []*active
+		top, takable := math.MinInt, true
+		for _, u := range t.Users {
+			if u.Priority < 0 { // Mirakurun 自身の番組表取得は Mirakurun が退かす
+				continue
+			}
+			if u.on(typ, mkChannel) {
+				return nil
+			}
+			a, ok := mine[u.ID]
+			if !ok || a.priority >= priority {
+				takable = false
+				continue
+			}
+			here = append(here, a)
+			top = max(top, a.priority)
+		}
+		if takable && len(here) == 0 {
+			return nil
+		}
+		if takable && (victims == nil || top < lowest) {
+			victims, lowest = here, top
+		}
+	}
+	if victims == nil {
+		return nil
+	}
+	gone := map[string]bool{}
+	for _, a := range victims {
+		b.logf("taking a tuner from %s (priority %d) for priority %d", "優先度 %[3]d のため %[1]s (優先度 %[2]d) からチューナーを取り上げます",
+			a.use, a.priority, priority)
+		gone[a.mkUserID] = true
+		a.cancel()
+	}
+	// Mirakurun が利用者を外すまで待つ。待たずに頼むと、空きを探して 12.5 秒粘った末の 503 になりうる
+	for range 50 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+		if err := b.mk(ctx, "/api/tuners", &list); err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(list, func(t mkTuner) bool {
+			return slices.ContainsFunc(t.Users, func(u mkUser) bool { return gone[u.ID] })
+		}) {
+			return nil
+		}
+	}
+	return nil
+}
+
 func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	typ, channel, use := q.Get("type"), q.Get("channel"), q.Get("use")
@@ -478,6 +547,11 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		b.mu.Unlock()
 	}
 	defer donePending()
+
+	if err := b.preempt(r.Context(), typ, mkChannel, priority); err != nil && r.Context().Err() == nil {
+		// 取り上げられなくても Mirakurun に頼むことはできる。断られたら 409 になる
+		b.logf("cannot check tuners before opening %s %s: %v", "%s %s を開く前にチューナーを確かめられません: %v", typ, channel, err)
+	}
 
 	decode := "1"
 	if keyless(use) {

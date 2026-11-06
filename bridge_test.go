@@ -345,6 +345,29 @@ func TestKeylessLimit(t *testing.T) {
 	}
 }
 
+// PRIORITY_MAP で全部同じ値に潰しても、denpa の優先度どおりに取り上げる
+func TestPreemptsOwnLowerPriorityUsers(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "10:0,9:0,3:0", 1)
+	epg := open(t, e.base, q("GR", "T27", "3", "epg T27"))
+	live := open(t, e.base, q("GR", "T21", "9", "live a"))
+	if live.status != 200 {
+		t.Fatal(live.status)
+	}
+	if got := ended(t, epg); got != "broken" {
+		t.Fatal(got)
+	}
+	if s := open(t, e.base, q("GR", "T27", "10", "rec 1")).status; s != 200 {
+		t.Fatal(s)
+	}
+	if got := ended(t, live); got != "broken" {
+		t.Fatal(got)
+	}
+	// 録画からは取り上げない
+	if s := open(t, e.base, q("GR", "T21", "9", "live b")).status; s != 409 {
+		t.Fatal(s)
+	}
+}
+
 func TestKeylessLimitSharesSatelliteTuners(t *testing.T) {
 	channels := append(slices.Clone(bsChannels), MirakurunChannel{Type: "CS", Channel: "CS2", Services: services(6, 296)})
 	e := setup(t, [][]string{{"BS", "CS"}, {"BS", "CS"}}, channels, "", 1)
