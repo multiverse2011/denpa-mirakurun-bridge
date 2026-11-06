@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -152,6 +153,12 @@ func (a *active) handOff() {
 
 type pendingReq struct{ typ, mkChannel string }
 
+// claim は取り上げ中の要求。切られた側の掛け直しに、空いたチューナーを先に取らせないために置く
+type claim struct {
+	types    []string // 取り上げたチューナーが受けられる種別 (BS と CS は同じチューナーを使う)
+	priority int
+}
+
 type logLine struct {
 	At   int64  `json:"at"`
 	Text string `json:"text"`
@@ -169,6 +176,7 @@ type Bridge struct {
 	saveMu    sync.Mutex
 	active    map[*active]struct{}
 	pending   map[*pendingReq]struct{}
+	claims    map[*claim]struct{}
 	listeners map[*listener]struct{}
 	stored    []json.RawMessage
 	parsed    []DenpaChannel
@@ -192,6 +200,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 		client:       &http.Client{},
 		active:       map[*active]struct{}{},
 		pending:      map[*pendingReq]struct{}{},
+		claims:       map[*claim]struct{}{},
 		listeners:    map[*listener]struct{}{},
 		stallTimeout: 30 * time.Second,
 		writeTimeout: 30 * time.Second,
@@ -398,6 +407,106 @@ func (b *Bridge) keylessMayTune(ctx context.Context, typ, mkChannel string) (boo
 	return held+len(waiting) < b.cfg.KeylessTuners, nil
 }
 
+// denpa の約束 2 (優先度の低い利用者しかいないチューナーは取り上げる) のうち、こちらの利用者どうしの分。
+// Mirakurun は相手の優先度が自分より小さいときしか取り上げないので、PRIORITY_MAP で同じ値に潰すと
+// ライブ (9) が番組表 (3) を待ち続ける。比べるのは denpa の優先度。空きか同じチャンネルの選局があれば何もしない。
+// 取り上げたときは claim を置く。返す unclaim は要求が決着したら (繋がった・断られた) 呼ぶ。
+func (b *Bridge) preempt(ctx context.Context, typ, mkChannel string, priority int) (unclaim func(), err error) {
+	unclaim = func() {}
+	var list []mkTuner
+	if err := b.mk(ctx, "/api/tuners", &list); err != nil {
+		return unclaim, err
+	}
+	mine := b.ours()
+	var victims []*active
+	var victimTypes []string
+	lowest := 0
+	for _, t := range list {
+		if !t.IsAvailable || !slices.Contains(t.Types, typ) {
+			continue
+		}
+		var here []*active
+		top, takable := math.MinInt, true
+		for _, u := range t.Users {
+			if u.Priority < 0 { // Mirakurun 自身の番組表取得は Mirakurun が退かす
+				continue
+			}
+			if u.on(typ, mkChannel) {
+				return unclaim, nil
+			}
+			a, ok := mine[u.ID]
+			if !ok || a.priority >= priority {
+				takable = false
+				continue
+			}
+			here = append(here, a)
+			top = max(top, a.priority)
+		}
+		if takable && len(here) == 0 {
+			return unclaim, nil
+		}
+		if takable && (victims == nil || top < lowest) {
+			victims, victimTypes, lowest = here, t.Types, top
+		}
+	}
+	if victims == nil {
+		return unclaim, nil
+	}
+	// 切る前に置く。切られた側の掛け直しは、置いたあとに来る
+	c := &claim{victimTypes, priority}
+	b.mu.Lock()
+	b.claims[c] = struct{}{}
+	b.mu.Unlock()
+	unclaim = func() {
+		b.mu.Lock()
+		delete(b.claims, c)
+		b.mu.Unlock()
+	}
+	gone := map[string]bool{}
+	for _, a := range victims {
+		b.logf("taking a tuner from %s (priority %d) for priority %d", "優先度 %[3]d のため %[1]s (優先度 %[2]d) からチューナーを取り上げます",
+			a.use, a.priority, priority)
+		gone[a.mkUserID] = true
+		a.cancel()
+	}
+	// Mirakurun が利用者を外すまで待つ。待たずに頼むと、空きを探して 12.5 秒粘った末の 503 になりうる
+	for range 50 {
+		select {
+		case <-ctx.Done():
+			return unclaim, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+		if err := b.mk(ctx, "/api/tuners", &list); err != nil {
+			return unclaim, err
+		}
+		if !slices.ContainsFunc(list, func(t mkTuner) bool {
+			return slices.ContainsFunc(t.Users, func(u mkUser) bool { return gone[u.ID] })
+		}) {
+			return unclaim, nil
+		}
+	}
+	var uses []string
+	for _, a := range victims {
+		uses = append(uses, a.use)
+	}
+	b.logf("%s still on the tuner 5s after being taken off; tuning without waiting", "取り上げた %s が 5 秒たってもチューナーから外れません。待たずに選局します",
+		strings.Join(uses, ", "))
+	return unclaim, nil
+}
+
+// typ のチューナーを、priority より高い要求が取り上げている最中か。
+// shortcut: その間は別のチューナーに空きや相乗りがあっても 409 にする (denpa が掛け直す)、困るなら claim にチューナー名を持たせて絞る
+func (b *Bridge) yielding(typ string, priority int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for c := range b.claims {
+		if c.priority > priority && slices.Contains(c.types, typ) {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	typ, channel, use := q.Get("type"), q.Get("channel"), q.Get("use")
@@ -452,6 +561,11 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 
 	// 数えてから pending に載せるまでを 1 本ずつ通す。同時に来た 2 本がどちらも空きと読まないように。
 	// pending は利用者として数えられる (active に載る) まで残す
+	if b.yielding(typ, priority) {
+		writeJSON(w, 409, map[string]string{"error": b.msg.t("a higher-priority request is taking a tuner", "優先度の高い要求がチューナーを取り上げている最中です")})
+		return
+	}
+
 	asking := &pendingReq{typ, mkChannel}
 	if keyless(use) {
 		b.keylessMu.Lock()
@@ -478,6 +592,13 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		b.mu.Unlock()
 	}
 	defer donePending()
+
+	unclaim, err := b.preempt(r.Context(), typ, mkChannel, priority)
+	defer unclaim()
+	if err != nil && r.Context().Err() == nil {
+		// 取り上げられなくても Mirakurun に頼むことはできる。断られたら 409 になる
+		b.logf("cannot check tuners before opening %s %s: %v", "%s %s を開く前にチューナーを確かめられません: %v", typ, channel, err)
+	}
 
 	decode := "1"
 	if keyless(use) {
@@ -536,6 +657,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	b.active[me] = struct{}{}
 	delete(b.pending, asking) // active への移し替えは 1 回のロックで (keylessMayTune の写しと食い違わないように)
 	b.mu.Unlock()
+	unclaim() // 繋がれば Mirakurun の利用者として見えるので、もう要らない
 	defer func() {
 		b.mu.Lock()
 		delete(b.active, me)
