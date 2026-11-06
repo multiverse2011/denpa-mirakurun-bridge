@@ -368,6 +368,23 @@ func TestPreemptsOwnLowerPriorityUsers(t *testing.T) {
 	}
 }
 
+// 取り上げた相手がすぐ掛け直しても、空いたチューナーを先に取らせない
+func TestPreemptedUserCannotRetake(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "10:0,9:0,3:0", 1)
+	epg := open(t, e.base, q("GR", "T27", "3", "epg T27"))
+	live := make(chan opened, 1)
+	go func() { live <- open(t, e.base, q("GR", "T21", "9", "live a")) }()
+	if got := ended(t, epg); got != "broken" {
+		t.Fatal(got)
+	}
+	if s := open(t, e.base, q("GR", "T27", "3", "epg T27")).status; s != 409 {
+		t.Fatal(s)
+	}
+	if s := (<-live).status; s != 200 {
+		t.Fatal(s)
+	}
+}
+
 func TestKeylessLimitSharesSatelliteTuners(t *testing.T) {
 	channels := append(slices.Clone(bsChannels), MirakurunChannel{Type: "CS", Channel: "CS2", Services: services(6, 296)})
 	e := setup(t, [][]string{{"BS", "CS"}, {"BS", "CS"}}, channels, "", 1)
