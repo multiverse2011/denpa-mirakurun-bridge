@@ -485,6 +485,8 @@ func (b *Bridge) preempt(ctx context.Context, typ, mkChannel string, priority in
 			return unclaim, nil
 		}
 	}
+	b.logf("Mirakurun still lists the users taken off for %s %s after 5s; asking anyway", "%s %s のために切った利用者が 5 秒たっても Mirakurun に残っています。そのまま頼みます",
+		typ, mkChannel)
 	return unclaim, nil
 }
 
