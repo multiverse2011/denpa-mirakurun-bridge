@@ -597,7 +597,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	defer unclaim()
 	if err != nil && r.Context().Err() == nil {
 		// 取り上げられなくても Mirakurun に頼むことはできる。断られたら 409 になる
-		b.logf("cannot check tuners before opening %s %s: %v", "%s %s を開く前にチューナーを確かめられません: %v", typ, channel, err)
+		b.logf("cannot look for a tuner to take over for %s %s (%v); tuning without taking one", "%s %s のために取り上げるチューナーを探せませんでした (%v)。取り上げずに選局します", typ, channel, err)
 	}
 
 	decode := "1"
@@ -645,7 +645,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		case 404:
 			status = 404
 		}
-		b.logf("cannot open %s %s (%s, priority %d→%d): Mirakurun %d", "%s %s (%s, priority %d→%d) を開けません: Mirakurun %d",
+		b.logf("cannot open %s %s (%s, priority denpa %d / Mirakurun %d): Mirakurun returned %d", "%s %s (%s, 優先度 denpa %d / Mirakurun %d) を開けません: Mirakurun が %d を返しました",
 			typ, channel, use, priority, mkPriority, res.StatusCode)
 		writeJSON(w, status, map[string]string{"error": fmt.Sprintf("Mirakurun %d: %s", res.StatusCode, text)})
 		return
@@ -683,7 +683,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 			}
 			if werr != nil {
 				if errors.Is(werr, os.ErrDeadlineExceeded) {
-					b.logf("closed %s: not read for %v", "%s が %v 読まないので切りました", use, b.writeTimeout)
+					b.logf("closed %s: the receiver read nothing for %v", "%s の受け手が %v 読まないので切りました", use, b.writeTimeout)
 				}
 				return
 			}
@@ -839,7 +839,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if !hostAllowed(r.Host, b.cfg.AllowedHosts) {
 		b.logf("refused unknown host %q (403); add it to ALLOWED_HOSTS",
-			"知らない名前「%s」で呼ばれたので断りました (403)。ALLOWED_HOSTS に足してください", r.Host)
+			"知らないホスト名「%s」で呼ばれたので断りました (403)。ALLOWED_HOSTS に足してください", r.Host)
 		writeJSON(w, 403, map[string]string{"error": "unknown host"})
 		return
 	}
@@ -911,15 +911,15 @@ func (b *Bridge) Drain(limit time.Duration) {
 	if limit <= 0 || b.recording.Load() == 0 {
 		return
 	}
-	b.logf("asked to stop; waiting for recordings to finish (up to %v)", "止まれの合図。録画が終わるまで待ちます (上限 %v)", limit)
+	b.logf("asked to stop; waiting up to %v for recordings to finish", "停止を求められました。録画が終わるまで最大 %v 待ちます", limit)
 	until := time.Now().Add(limit)
 	for b.recording.Load() > 0 && time.Now().Before(until) {
 		time.Sleep(min(b.drainPoll, time.Until(until))) // 上限を越えて待たない
 	}
 	if b.recording.Load() > 0 {
-		b.logf("gave up waiting; stopping", "待ちきれないので畳みます")
+		b.logf("recordings still running after %v; stopping anyway", "%v 待っても録画が終わらないので止まります", limit)
 	} else {
-		b.logf("recordings finished; stopping", "録画が終わったので畳みます")
+		b.logf("recordings finished; stopping", "録画が終わったので止まります")
 	}
 }
 

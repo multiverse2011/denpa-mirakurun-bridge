@@ -690,7 +690,7 @@ func TestPutChannelsReplacesOnlyScannedTypes(t *testing.T) {
 	}
 }
 
-// 止まれの合図のあとも、録画の選局が終わるまで待つ。ライブなどほかの利用者は待たない (denpa のエージェントの Drain と同じ)
+// 停止を求められたあとも、録画の選局が終わるまで待つ。ライブなどほかの利用者は待たない (denpa のエージェントの Drain と同じ)
 func TestDrainWaitsOnlyForRecordings(t *testing.T) {
 	e := setup(t, twoGR, grChannels, "", 9, func(b *Bridge) { b.drainPoll = 10 * time.Millisecond })
 	drained := func(limit time.Duration) chan struct{} {

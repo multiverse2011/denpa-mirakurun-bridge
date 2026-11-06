@@ -121,7 +121,7 @@ func TestPairRefusals(t *testing.T) {
 	if status, body := postPair(t, c, base, d, pairProof("wrong", "client", p.fingerprint, d)); status != 403 || !strings.Contains(body["error"].(string), "合言葉") {
 		t.Fatalf("wrong token: %d %v", status, body)
 	}
-	if status, body := postPair(t, c, base, other, pairProof(p.token, "client", p.fingerprint, other)); status != 403 || !strings.Contains(body["error"].(string), "名乗り") {
+	if status, body := postPair(t, c, base, other, pairProof(p.token, "client", p.fingerprint, other)); status != 403 || !strings.Contains(body["error"].(string), "一致しません") {
 		t.Fatalf("wrong client: %d %v", status, body)
 	}
 	if status, _ := postPair(t, c, base, d, ""); status != 403 {

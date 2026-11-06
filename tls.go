@@ -222,7 +222,7 @@ func (b *Bridge) pair(w http.ResponseWriter, r *http.Request) {
 	}
 	client := *body.Client
 	if peer := peerFingerprint(r); peer == "" || client != peer {
-		writeJSON(w, 403, map[string]string{"error": b.msg.t("the certificate does not match the client", "証明書が名乗りと違います")})
+		writeJSON(w, 403, map[string]string{"error": b.msg.t("the certificate does not match the client", "証明書が client の値と一致しません")})
 		return
 	}
 	// AGENT_PAIR_TOKEN に短い合言葉を渡されても総当たりしにくいよう、外れは 1 本ずつ failDelay 待たせる
@@ -252,7 +252,7 @@ func (b *Bridge) pair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if added {
-		b.logf("paired with denpa (%s)", "denpa (%s) と組みました", client[:min(16, len(client))])
+		b.logf("paired with denpa (certificate %s…)", "denpa (証明書 %s…) と組みました", client[:min(16, len(client))])
 	}
 	writeJSON(w, 200, map[string]string{"proof": pairProof(p.token, "agent", p.fingerprint, client)})
 }
