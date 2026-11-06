@@ -44,13 +44,13 @@ func run() error {
 	}
 	keylessTuners, err := strconv.Atoi(env("KEYLESS_TUNERS", "1"))
 	if err != nil || keylessTuners < 0 {
-		return errors.New(msg.t("KEYLESS_TUNERS must be an integer of 0 or more: %s", "KEYLESS_TUNERS は 0 以上の整数です: %s", os.Getenv("KEYLESS_TUNERS")))
+		return errors.New(msg.t("KEYLESS_TUNERS must be an integer of 0 or more (got %s)", "KEYLESS_TUNERS は 0 以上の整数で指定してください (指定値: %s)", os.Getenv("KEYLESS_TUNERS")))
 	}
 	// denpa のエージェントと同じ既定 (6 時間)。0 なら待たない
 	shutdownWait, err := strconv.ParseInt(env("SHUTDOWN_WAIT", "21600000"), 10, 64)
 	// 上限は time.Duration に収まる長さ (超えると負に回って待たなくなる)
 	if err != nil || shutdownWait < 0 || shutdownWait > math.MaxInt64/int64(time.Millisecond) {
-		return errors.New(msg.t("SHUTDOWN_WAIT must be milliseconds of 0 or more: %s", "SHUTDOWN_WAIT は 0 以上のミリ秒です: %s", os.Getenv("SHUTDOWN_WAIT")))
+		return errors.New(msg.t("SHUTDOWN_WAIT must be milliseconds of 0 or more (got %s)", "SHUTDOWN_WAIT は 0 以上のミリ秒で指定してください (指定値: %s)", os.Getenv("SHUTDOWN_WAIT")))
 	}
 	var allowed []string
 	if v := env("ALLOWED_HOSTS", ""); v != "" {
@@ -66,7 +66,7 @@ func run() error {
 		}
 	case "0":
 	default:
-		return errors.New(msg.t("AGENT_TLS must be 1 or 0: %s", "AGENT_TLS は 1 か 0 です: %s", os.Getenv("AGENT_TLS")))
+		return errors.New(msg.t("AGENT_TLS must be 1 or 0 (got %s)", "AGENT_TLS は 1 か 0 で指定してください (指定値: %s)", os.Getenv("AGENT_TLS")))
 	}
 	mirakurun := strings.TrimRight(env("MIRAKURUN_URL", "http://127.0.0.1:40772"), "/")
 	b, err := NewBridge(Config{
@@ -107,7 +107,7 @@ func run() error {
 		// Drain が 0 を見てからリスナーが閉じるまでに始まった録画も、ここで待つ (Shutdown は流れている応答を切らない)
 		b.Drain(time.Until(until))
 	}()
-	b.logf("listening on %s → Mirakurun %s", "listening on %s → Mirakurun %s", addr, mirakurun)
+	b.logf("listening on %s → Mirakurun %s", "%s で待ち受けます (Mirakurun: %s)", addr, mirakurun)
 	serve := srv.ListenAndServe
 	if pairing != nil {
 		srv.TLSConfig = pairing.TLSConfig()
