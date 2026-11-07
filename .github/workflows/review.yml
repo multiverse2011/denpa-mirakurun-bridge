@@ -44,8 +44,9 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-          # Linux は --accept-routes が無いと subnet route を受け取らない。ランナーの DNS は書き換えさせない
-          args: --accept-routes --accept-dns=false
+          # --accept-routes は action（v4）が常に付ける（重ねると flag provided multiple times で落ちる）。
+          # ランナーの DNS は書き換えさせない
+          args: --accept-dns=false
       # Claude Code を LiteLLM 経由で Kimi Code へ向けて動かす（鍵は LiteLLM が持ち、ここには仮想キーだけ）
       - uses: anthropics/claude-code-action@v1
         env:
