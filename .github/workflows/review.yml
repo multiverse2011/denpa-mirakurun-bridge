@@ -37,21 +37,31 @@ jobs:
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      # Claude Code を Kimi Code の Anthropic 互換エンドポイントへ向けて動かす
+      # 自宅の LiteLLM（agent-vm）へ届くよう、ジョブの間だけ tailnet に入る（ephemeral、tag:ci）。
+      # tag:ci が届くのは ACL で 10.0.20.22:4000 だけ。ICMP も通らないので ping は使わない。
+      - uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          # --accept-routes は action（v4）が常に付ける（重ねると flag provided multiple times で落ちる）。
+          # ランナーの DNS は書き換えさせない
+          args: --accept-dns=false
+      # Claude Code を LiteLLM 経由で Kimi Code へ向けて動かす（鍵は LiteLLM が持ち、ここには仮想キーだけ）
       - uses: anthropics/claude-code-action@v1
         env:
-          ANTHROPIC_BASE_URL: https://api.kimi.ai/coding/
-          ANTHROPIC_MODEL: kimi-for-coding
-          ANTHROPIC_DEFAULT_FABLE_MODEL: kimi-for-coding
-          ANTHROPIC_DEFAULT_OPUS_MODEL: kimi-for-coding
-          ANTHROPIC_DEFAULT_SONNET_MODEL: kimi-for-coding
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: kimi-for-coding
-          CLAUDE_CODE_SUBAGENT_MODEL: kimi-for-coding
-          # Bash ツールの子プロセスから KIMI_API_KEY などを消す。PR 経由のプロンプトインジェクションで
+          ANTHROPIC_BASE_URL: http://10.0.20.22:4000
+          ANTHROPIC_MODEL: kimi/kimi-for-coding
+          ANTHROPIC_DEFAULT_FABLE_MODEL: kimi/kimi-for-coding
+          ANTHROPIC_DEFAULT_OPUS_MODEL: kimi/kimi-for-coding
+          ANTHROPIC_DEFAULT_SONNET_MODEL: kimi/kimi-for-coding
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: kimi/kimi-for-coding
+          CLAUDE_CODE_SUBAGENT_MODEL: kimi/kimi-for-coding
+          # Bash ツールの子プロセスから LiteLLM の仮想キーなどを消す。PR 経由のプロンプトインジェクションで
           # `gh pr comment "$ANTHROPIC_API_KEY"` のように展開させても空になる (allowed_non_write_users 未設定だと既定で無効)
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 1
         with:
-          anthropic_api_key: ${{ secrets.KIMI_API_KEY }}
+          anthropic_api_key: ${{ secrets.LITELLM_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
@@ -63,7 +73,7 @@ jobs:
             日本語で書いてください。
             問題がなければ短くそう書くだけで構いません。
           claude_args: |
-            --model kimi-for-coding
+            --model kimi/kimi-for-coding
             --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
       # 外して終わるので、フォーク側が push し直した後は付け直せば再レビューされる
       - name: review ラベルを外す
