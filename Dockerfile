@@ -8,6 +8,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
 FROM scratch
 COPY --from=build /bridge /bridge
 COPY --from=build --chown=65532:65532 /config /config
+COPY NOTICE LICENSE /
 ENV HOST=0.0.0.0 CHANNELS_FILE=/config/channels.json
 USER 65532:65532
 EXPOSE 25252

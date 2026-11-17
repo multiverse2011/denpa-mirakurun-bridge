@@ -115,7 +115,7 @@ Mirakurun のデバイスやカードリーダー、`network_mode: host` など�
 | `PRIORITY_MAP` | なし | denpa の優先度を Mirakurun の優先度に変換する対応表です (例: `10:2,9:1`)。表にない値はそのまま渡し、負の値は 0 にします |
 | `KEYLESS_TUNERS` | `1` | 番組表・ロゴの取得やチャンネルスキャンで、新たに使ってよいチューナーの数です |
 | `DECODE_KEYLESS` | `0` | `1` にすると、番組表・ロゴ・スキャンの取得でも復号します (`decode=1`)。Sakurako など上流が `decode` の異なる要求を共有しないとき、ライブと同じ復号済みストリームを共有できます。カードやデコーダが不調だと番組表の取得も巻き添えになります |
-| `EPG_MODE` | `broadcast` | **実験的機能**です。`synthetic` にすると、`use=epg` を Mirakurun の番組表 (`/api/programs`) から合成して返し、チューナーを使いません。合成できないときは従来のストリーム中継に落ちます。live・rec・scan は変わりません (切り替えは再起動) |
+| `EPG_MODE` | `broadcast` | **実験的機能**です。`synthetic` にすると、`use=epg` を Mirakurun の番組表 (`/api/programs`) から合成して返し、チューナーを使いません。合成できないときは従来のストリーム中継に落ちます。live・rec・scan は変わりません (切り替えは再起動)。短い説明に収まらない説明の後半は extended の「番組内容」に入れますが、denpa の全体検索 (`/search`) は extended を見ないため、後半はそこでは当たりません |
 | `CHANNELS_FILE` | `data/channels.json` | denpa から受け取ったチャンネル一覧の保存先です。Docker イメージでは `/config/channels.json` です |
 | `AGENT_TLS` | `1` | `0` にすると TLS を使わず HTTP で待ち受けます (v2.27.0 以前の denpa 向け) |
 | `AGENT_PAIR_TOKEN` | なし | denpa と組むための合言葉です。未指定なら自動で生成し、`CHANNELS_FILE` と同じ場所の `tls/pair-token` に保存します |
@@ -177,3 +177,5 @@ go test -race ./...
 
 ただし [tls.go](tls.go) は denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移植したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
 このファイルを改変して配布する場合は、そのファイルを MPL-2.0 で公開してください。
+
+[jis0208.go](jis0208.go) と [aribextra.go](aribextra.go) の文字の対応表は、WHATWG Encoding Standard と denpa / libaribcaption の表から生成したものです。出典とライセンスの文面は [NOTICE](NOTICE) にまとめています。

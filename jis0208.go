@@ -5,6 +5,11 @@ import (
 	"encoding/binary"
 )
 
+// 出典とライセンス: WHATWG Encoding Standard の EUC-JP の索引
+// (https://encoding.spec.whatwg.org/#euc-jp、CC BY 4.0、Copyright © WHATWG
+// (Apple, Google, Mozilla, Microsoft))。Node.js の TextDecoder('euc-jp') で
+// 逆引きして生成した。文面はリポジトリの NOTICE に置いた。
+//
 // jis0208Data は Unicode の符号位置 (UTF-16) と JIS X 0208 の区点の対応 (各 2 バイト、上位バイトから)。
 // denpa (aribtext.ts) と同じ WHATWG の EUC-JP デコーダで 1〜84 区を引いて作った。
 // denpa は 85 区から先を自前の表で読むので、ここには入れない。

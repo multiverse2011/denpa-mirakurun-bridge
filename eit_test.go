@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestCRC32MPEG(t *testing.T) {
@@ -68,6 +69,181 @@ func TestBCDDurationCapsAt99Hours(t *testing.T) {
 			t.Fatalf("%v: % x != % x", c.ms, got, c.want)
 		}
 	}
+}
+
+// ARIB の追加記号・JIS X 0213 の字 (85 区以降) を「？」に落とさない
+func TestAribExtraCharacters(t *testing.T) {
+	for _, ch := range []string{"🈑", "🈖", "🈀", "🈞", "🈔", "髙", "﨑", "德", "麴", "𠮷"} {
+		r := []rune(ch)[0]
+		cell, ok := aribExtra[r]
+		if !ok {
+			t.Fatalf("%s が aribExtra にありません", ch)
+		}
+		var want []byte
+		if cell.designator != 0x42 {
+			want = append(want, 0x1b, '$', cell.designator)
+		}
+		want = append(want, cell.ku, cell.ten)
+		got, _ := encodeArib(ch)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: % x != % x", ch, got, want)
+		}
+	}
+}
+
+// 2 バイト集合の指示 (0x42・0x39・0x3A・0x3B) を切り替えても、指示と区点を正しく出す。
+// 0x42 以外は jis0208 に無い字を固定で選び、その designator が実際に使われることを確かめる
+func TestAribDesignatorSwitching(t *testing.T) {
+	reps := []struct {
+		ch         string
+		designator byte
+		inJIS      bool
+	}{
+		{"あ", 0x42, true},
+		{"㬢", 0x39, false}, // JIS X 0213 の 1 面 85 区
+		{"㐆", 0x3a, false}, // JIS X 0213 の 2 面
+		{"🈑", 0x3b, false}, // ARIB 追加記号
+	}
+	for _, rp := range reps {
+		r := []rune(rp.ch)[0]
+		if _, inJIS := jis0208[r]; inJIS != rp.inJIS {
+			t.Fatalf("%s: jis0208 にあるかが違います (%v)", rp.ch, inJIS)
+		}
+		if !rp.inJIS {
+			if cell, ok := aribExtra[r]; !ok || cell.designator != rp.designator {
+				t.Fatalf("%s: 指示 %02x のセルがありません (%+v)", rp.ch, rp.designator, cell)
+			}
+		}
+	}
+	seq := []rune{'あ', '㬢', '㐆', '🈑', 'い', '🈑', '㐆', '㬢', 'あ'}
+	var want []byte
+	prev := byte(0x42)
+	for _, r := range seq {
+		var designator, ku, ten byte
+		if code, ok := jis0208[r]; ok {
+			designator, ku, ten = 0x42, byte(code>>8), byte(code)
+		} else {
+			cell := aribExtra[r]
+			designator, ku, ten = cell.designator, cell.ku, cell.ten
+		}
+		if designator != prev {
+			want = append(want, 0x1b, '$', designator)
+			prev = designator
+		}
+		want = append(want, ku, ten)
+	}
+	got, _ := encodeArib(string(seq))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("% x != % x", got, want)
+	}
+}
+
+// 英数・半角カナ・漢字・追加記号の間の切り替え
+func TestAribModeSwitching(t *testing.T) {
+	cell := aribExtra['🈑']
+	want := []byte{
+		0x1b, '(', 'J', 0x89, 'A', // 英数
+		0x8a, 0x1b, '(', 'I', 0x31, // 半角カナ (NSZ して ESC ( I)
+		0x1b, '$', 0x42, 0x24, 0x22, // 漢字 (ESC $ B)
+		0x1b, '$', cell.designator, cell.ku, cell.ten, // 追加記号
+		0x1b, '(', 'J', 0x89, 'A', // 英数に戻る
+	}
+	got, _ := encodeArib("Aｱあ🈑A")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("% x != % x", got, want)
+	}
+}
+
+// splitAribString は CRLF・サロゲートペア・制御文字の途中で切らない
+func TestSplitAribStringBoundaries(t *testing.T) {
+	cases := []string{
+		"a\r\nb",
+		"あ\r\nい",
+		"漢\r\n字",
+		"𠮷\r\nあ",
+		"🈑\r\n𠮷",
+		"A\tB\r\nC",
+		strings.Repeat("あ", 200),
+		"A\x00B\r\nC\x1bD",
+	}
+	for _, s := range cases {
+		enc, _ := encodeArib(s)
+		for limit := 0; limit <= len(enc)+2; limit++ {
+			head, tail := splitAribString(s, limit)
+			if head+tail != s {
+				t.Fatalf("%q (%d): 前半と後半が元に戻りません", s, limit)
+			}
+			headEnc, _ := encodeArib(head)
+			if len(headEnc) > limit {
+				t.Fatalf("%q (%d): 前半が %d バイトあります", s, limit, len(headEnc))
+			}
+			if !utf8.ValidString(head) || !utf8.ValidString(tail) {
+				t.Fatalf("%q (%d): UTF-8 が壊れています", s, limit)
+			}
+			if strings.HasSuffix(head, "\r") && strings.HasPrefix(tail, "\n") {
+				t.Fatalf("%q (%d): CRLF を分けています", s, limit)
+			}
+		}
+	}
+}
+
+// 長い説明は short_event に収まる分だけを残し、あふれた後半を extended の「番組内容」に移す
+func TestLongDescriptionMovesTailToExtended(t *testing.T) {
+	desc := strings.Repeat("あ", 200) // 400 バイト
+	p := epgProgram{
+		EventID: 1, StartAt: 1, Duration: 1, Name: "テスト", Description: desc,
+		Extended: map[string]string{"番組内容": "前書き"},
+	}
+	ev := eitEventBytes(p, 0)
+
+	nameBytes := truncateArib(p.Name, 250)
+	head, tail := splitAribString(desc, 250-len(nameBytes))
+	if tail == "" {
+		t.Fatal("説明が切られていません")
+	}
+	if head+tail != desc {
+		t.Fatalf("前半と後半が元の説明と一致しません")
+	}
+	headBytes, _ := encodeArib(head)
+
+	var short []byte
+	var ext [][]byte
+	for _, d := range descriptorsOf(ev[12:]) {
+		switch d[0] {
+		case 0x4d:
+			short = d
+		case 0x4e:
+			ext = append(ext, d)
+		}
+	}
+	if short == nil {
+		t.Fatal("short_event_descriptor がありません")
+	}
+	nameLen := int(short[5])
+	descLen := int(short[6+nameLen])
+	if got := short[7+nameLen : 7+nameLen+descLen]; !bytes.Equal(got, headBytes) {
+		t.Fatalf("説明の前半が違います: %d バイト", len(got))
+	}
+	items := extendedItems(t, ext)
+	heading, _ := encodeArib("番組内容")
+	want, _ := encodeArib("前書き\n" + tail)
+	if !bytes.Equal(items[string(heading)], want) {
+		t.Fatalf("extended の番組内容に後半がありません")
+	}
+}
+
+// descriptorsOf は記述子の並びを 1 本ずつに分ける
+func descriptorsOf(data []byte) [][]byte {
+	var out [][]byte
+	for at := 0; at+2 <= len(data); {
+		n := 2 + int(data[at+1])
+		if at+n > len(data) {
+			break
+		}
+		out = append(out, data[at:at+n])
+		at += n
+	}
+	return out
 }
 
 // 制御文字は ARIB のエスケープと紛れるので '?' に、改行は APR、タブは空白にする

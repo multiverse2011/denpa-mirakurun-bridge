@@ -1,3 +1,5 @@
 *
 !go.mod
 !*.go
+!NOTICE
+!LICENSE
