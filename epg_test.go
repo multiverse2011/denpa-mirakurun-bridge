@@ -108,6 +108,30 @@ func getEPG(t *testing.T, base string, query map[string]string) (int, []byte) {
 	return res.StatusCode, body
 }
 
+// denpa は揃った時点で切るので、3 回送り切らなくても送り始めに成功のログを残す
+func TestSyntheticEPGLogsWhenStreaming(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{
+		EventID: 1, ServiceID: 1024, NetworkID: 32736,
+		StartAt: time.Now().UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組",
+	}}
+	e.mk.mu.Unlock()
+	o := open(t, e.base, q("GR", "T27", "3", "epg T27"))
+	if o.status != 200 {
+		t.Fatal(o.status)
+	}
+	o.cancel() // 3 回送り切る前に切る
+	e.b.mu.Lock()
+	found := slices.ContainsFunc(e.b.logs, func(l logLine) bool {
+		return strings.Contains(l.Text, "合成して送ります") && strings.Contains(l.Text, "チューナー不使用")
+	})
+	e.b.mu.Unlock()
+	if !found {
+		t.Fatal("送り始めの成功ログがありません")
+	}
+}
+
 func TestSyntheticEPG(t *testing.T) {
 	channels := []MirakurunChannel{
 		{Type: "GR", Channel: "27", Services: []MirakurunService{{ServiceID: 1024, NetworkID: 32736, Type: 1, Name: "サービスA"}}},
