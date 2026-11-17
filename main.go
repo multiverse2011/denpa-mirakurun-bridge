@@ -32,6 +32,14 @@ func main() {
 	}
 }
 
+func parseEPGMode(mode string, m messages) (string, error) {
+	switch mode {
+	case "broadcast", "synthetic":
+		return mode, nil
+	}
+	return "", errors.New(m.t("EPG_MODE must be broadcast or synthetic (got %s)", "EPG_MODE は broadcast か synthetic で指定してください (指定値: %s)", mode))
+}
+
 func run() error {
 	lang := env("MESSAGE_LANG", "ja")
 	if lang != "ja" && lang != "en" {
@@ -45,6 +53,10 @@ func run() error {
 	keylessTuners, err := strconv.Atoi(env("KEYLESS_TUNERS", "1"))
 	if err != nil || keylessTuners < 0 {
 		return errors.New(msg.t("KEYLESS_TUNERS must be an integer of 0 or more (got %s)", "KEYLESS_TUNERS は 0 以上の整数で指定してください (指定値: %s)", os.Getenv("KEYLESS_TUNERS")))
+	}
+	epgMode, err := parseEPGMode(env("EPG_MODE", "broadcast"), msg)
+	if err != nil {
+		return err
 	}
 	var decodeKeyless bool
 	switch env("DECODE_KEYLESS", "0") {
@@ -84,12 +96,20 @@ func run() error {
 		AllowedHosts:  allowed,
 		Version:       env("DENPA_VERSION", "bridge-"+version),
 		KeylessTuners: keylessTuners,
+		EPGMode:       epgMode,
 		DecodeKeyless: decodeKeyless,
 		English:       msg.en,
 		Pairing:       pairing,
 	})
 	if err != nil {
 		return err
+	}
+	if epgMode == "synthetic" {
+		b.logf("EPG_MODE=synthetic (experimental): use=epg is synthesized from Mirakurun's programs; live, rec and scan are unchanged",
+			"EPG_MODE=synthetic (実験的機能): use=epg は Mirakurun の番組表から合成します。live・rec・scan は従来どおりです")
+	} else {
+		b.logf("EPG_MODE=broadcast: use=epg relays Mirakurun's stream",
+			"EPG_MODE=broadcast: use=epg は Mirakurun のストリームを中継します")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

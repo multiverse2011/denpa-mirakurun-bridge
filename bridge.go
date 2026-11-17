@@ -31,7 +31,8 @@ type Config struct {
 	AllowedHosts  []string
 	Version       string
 	KeylessTuners int
-	DecodeKeyless bool // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
+	EPGMode       string // "broadcast" (既定) か "synthetic" (実験的: use=epg を Mirakurun の番組表から合成)
+	DecodeKeyless bool   // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
 	English       bool
 	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
@@ -182,6 +183,10 @@ type Bridge struct {
 	stored    []json.RawMessage
 	parsed    []DenpaChannel
 	logs      []logLine
+
+	epgMu       sync.Mutex // Mirakurun の番組表の控え
+	epgCached   []epgProgram
+	epgCachedAt time.Time
 
 	recording atomic.Int32  // 開いている録画の選局 (Mirakurun の応答待ちも数える)
 	stopping  chan struct{} // 閉じたら SSE の購読者を帰す
@@ -545,6 +550,13 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	if mkChannel == "" {
 		writeJSON(w, 404, map[string]string{"error": b.msg.t("Mirakurun has no channel matching %s %s", "Mirakurun に %s %s に当たるチャンネルがありません", typ, channel)})
 		return
+	}
+
+	// 実験的機能。合成できなければ、下の従来のストリーム中継に落ちる
+	if b.cfg.EPGMode == "synthetic" && isEPGUse(use) {
+		if b.syntheticEPG(w, r, typ, channel, mkChannel, mkChannels) {
+			return
+		}
 	}
 
 	// 別のチャンネルへの引き継ぎは先に離して空きを見せる。同じチャンネルなら選局を共有したまま、繋がってから離す
