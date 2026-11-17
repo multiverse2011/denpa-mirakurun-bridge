@@ -74,15 +74,20 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []epgSer
 // epgPrograms は Mirakurun の番組表を返す。一定の間隔だけ覚えておく
 func (b *Bridge) epgPrograms(ctx context.Context) ([]epgProgram, error) {
 	b.epgMu.Lock()
-	defer b.epgMu.Unlock()
-	if b.epgCached != nil && time.Since(b.epgCachedAt) < epgProgramsTTL {
-		return b.epgCached, nil
+	cached, at := b.epgCached, b.epgCachedAt
+	b.epgMu.Unlock()
+	if cached != nil && time.Since(at) < epgProgramsTTL {
+		return cached, nil
 	}
+	// 控えは全要求で共有するので、取得は呼び出し元の切断に引きずられない。
+	// 同時に 2 本取っても害はない。期限は b.mk が付ける
 	var list []epgProgram
-	if err := b.mk(ctx, "/api/programs", &list); err != nil {
+	if err := b.mk(context.WithoutCancel(ctx), "/api/programs", &list); err != nil {
 		return nil, err
 	}
+	b.epgMu.Lock()
 	b.epgCached, b.epgCachedAt = list, time.Now()
+	b.epgMu.Unlock()
 	return list, nil
 }
 

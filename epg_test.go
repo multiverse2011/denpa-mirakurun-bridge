@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -196,6 +197,74 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 	if ids[200] {
 		t.Fatal("別の局の番組が混ざっています")
+	}
+}
+
+// 取得が遅い間も、ほかの要求が epgMu で待たされない (取得はロックの外)
+func TestEPGProgramsFetchesWithoutHoldingTheLock(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	started := make(chan struct{}, 2)
+	e.mk.mu.Lock()
+	e.mk.programsDelay = 300 * time.Millisecond
+	e.mk.programsStart = started
+	e.mk.mu.Unlock()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.b.epgPrograms(context.Background())
+		first <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("取得が始まりません")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := e.b.epgPrograms(context.Background())
+		second <- err
+	}()
+	for _, ch := range []chan error{first, second} {
+		if err := <-ch; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls, peak := e.mk.programsStats(); calls != 2 || peak != 2 {
+		t.Fatalf("取得がロックで直列化されています: calls=%d peak=%d", calls, peak)
+	}
+}
+
+// 呼び出し元が切れても、共有する取得は止めない
+func TestEPGProgramsIgnoresCallerCancel(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	started := make(chan struct{}, 1)
+	e.mk.mu.Lock()
+	e.mk.programsDelay = 300 * time.Millisecond
+	e.mk.programsStart = started
+	e.mk.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.b.epgPrograms(ctx)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("取得が始まりません")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("呼び出し元の切断で取得が止まりました: %v", err)
+	}
+	// 次の要求は控えから返り、取得は増えない
+	calls, _ := e.mk.programsStats()
+	if _, err := e.b.epgPrograms(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := e.mk.programsStats(); after != calls {
+		t.Fatalf("控えを使っていません: %d -> %d", calls, after)
 	}
 }
 
