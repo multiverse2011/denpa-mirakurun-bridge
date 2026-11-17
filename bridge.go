@@ -925,7 +925,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		out := map[string]any{
 			"version": b.cfg.Version, "os": osName, "arch": arch,
-			"runtime":    fmt.Sprintf("denpa-mirakurun-bridge %s / Go %s / Mirakurun %s", version, runtime.Version(), b.cfg.MirakurunURL),
+			"runtime": fmt.Sprintf("denpa-mirakurun-bridge %s / Go %s / %s", version, runtime.Version(),
+				b.msg.t("upstream %s", "上流 %s", b.cfg.MirakurunURL)),
 			"ccidDriver": nil,
 		}
 		if name := strings.TrimSpace(b.cfg.AgentName); name != "" {

@@ -405,8 +405,21 @@ func TestAboutNameAndRuntime(t *testing.T) {
 		t.Fatalf("name: %v", out["name"])
 	}
 	runtime, _ := out["runtime"].(string)
-	if !strings.HasPrefix(runtime, "denpa-mirakurun-bridge "+version+" / Go ") || !strings.HasSuffix(runtime, " / Mirakurun "+e.mk.URL) {
+	if !strings.HasPrefix(runtime, "denpa-mirakurun-bridge "+version+" / Go ") || !strings.HasSuffix(runtime, " / 上流 "+e.mk.URL) {
 		t.Fatalf("runtime: %q", runtime)
+	}
+	en := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.msg = messages{en: true} })
+	resEN, err := http.Get(en.base + "/denpa/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resEN.Body.Close()
+	outEN := map[string]any{}
+	if err := json.NewDecoder(resEN.Body).Decode(&outEN); err != nil {
+		t.Fatal(err)
+	}
+	if runtime, _ := outEN["runtime"].(string); !strings.HasSuffix(runtime, " / upstream "+en.mk.URL) {
+		t.Fatalf("runtime (en): %q", runtime)
 	}
 
 	// 空なら name を返さない (denpa は URL のホスト名で埋める)
