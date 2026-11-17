@@ -316,14 +316,25 @@ func TestHostAndContentType(t *testing.T) {
 	}
 }
 
-// denpa v2.51.0 の probeRaw (scramble.ts) の判定。「見える」以外は visible / invisible / unknown。
-// 404 で error が "not found" 以外のときだけ「置き場が見えない」になる
-func denpaRawProbeVerdict(status int, errorText string) string {
-	switch {
-	case status == 200:
-		return "visible"
-	case status == 404 && errorText != "" && errorText != "not found":
-		return "invisible"
+// denpaRawProbeVerdict は denpa v2.51.0 の probeRaw (scramble.ts) の判定を写したもの。
+// 結果は visible / invisible / unknown のいずれか。
+// 本文が JSON でなければ unknown。404 で error が文字列かつ "not found" 以外なら invisible。
+func denpaRawProbeVerdict(status int, body map[string]any, jsonBody, shaMatches bool) string {
+	if !jsonBody {
+		return "unknown"
+	}
+	if status == 200 {
+		if _, ok := body["sha256"].(string); ok {
+			if shaMatches {
+				return "visible"
+			}
+			return "invisible"
+		}
+	}
+	if status == 404 {
+		if text, ok := body["error"].(string); ok && text != "not found" {
+			return "invisible"
+		}
 	}
 	return "unknown"
 }
@@ -347,9 +358,29 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 	}
 	// 置き場は見ないので「確かめられない」。「見えない (警告になる)」ではない
 	status, body := post("/denpa/raw/probe", `{"path":".denpa/probe-1-abc"}`)
-	text, _ := body["error"].(string)
-	if status != 501 || denpaRawProbeVerdict(status, text) != "unknown" {
+	if status != 501 || denpaRawProbeVerdict(status, body, true, false) != "unknown" {
 		t.Fatalf("raw/probe: %d %v", status, body)
+	}
+	// 判定の写しが denpa と一致すること (404 は本文で意味が変わる)
+	for _, c := range []struct {
+		status           int
+		body             map[string]any
+		json, shaMatches bool
+		want             string
+	}{
+		{404, map[string]any{"error": "not found"}, true, false, "unknown"},
+		{404, map[string]any{"error": "missing"}, true, false, "invisible"},
+		{404, map[string]any{"error": ""}, true, false, "invisible"},
+		{404, map[string]any{}, true, false, "unknown"},
+		{200, map[string]any{"sha256": "abc"}, true, true, "visible"},
+		{200, map[string]any{"sha256": "abc"}, true, false, "invisible"},
+		{200, map[string]any{}, true, false, "unknown"},
+		{501, map[string]any{"error": "no"}, true, false, "unknown"},
+		{200, nil, false, false, "unknown"},
+	} {
+		if got := denpaRawProbeVerdict(c.status, c.body, c.json, c.shaMatches); got != c.want {
+			t.Fatalf("%d %v: %s", c.status, c.body, got)
+		}
 	}
 	// カードも持たない
 	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
