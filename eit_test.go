@@ -91,18 +91,31 @@ func TestAribExtraCharacters(t *testing.T) {
 	}
 }
 
-// 2 バイト集合の指示 (0x42・0x39・0x3A・0x3B) を切り替えても、指示と区点を正しく出す
+// 2 バイト集合の指示 (0x42・0x39・0x3A・0x3B) を切り替えても、指示と区点を正しく出す。
+// 0x42 以外は jis0208 に無い字を固定で選び、その designator が実際に使われることを確かめる
 func TestAribDesignatorSwitching(t *testing.T) {
-	rep := func(designator byte) rune {
-		for r, cell := range aribExtra {
-			if cell.designator == designator {
-				return r
+	reps := []struct {
+		ch         string
+		designator byte
+		inJIS      bool
+	}{
+		{"あ", 0x42, true},
+		{"㬢", 0x39, false}, // JIS X 0213 の 1 面 85 区
+		{"㐆", 0x3a, false}, // JIS X 0213 の 2 面
+		{"🈑", 0x3b, false}, // ARIB 追加記号
+	}
+	for _, rp := range reps {
+		r := []rune(rp.ch)[0]
+		if _, inJIS := jis0208[r]; inJIS != rp.inJIS {
+			t.Fatalf("%s: jis0208 にあるかが違います (%v)", rp.ch, inJIS)
+		}
+		if !rp.inJIS {
+			if cell, ok := aribExtra[r]; !ok || cell.designator != rp.designator {
+				t.Fatalf("%s: 指示 %02x のセルがありません (%+v)", rp.ch, rp.designator, cell)
 			}
 		}
-		t.Fatalf("指示 %02x の字がありません", designator)
-		return 0
 	}
-	seq := []rune{'あ', rep(0x39), rep(0x3a), rep(0x3b), 'い', rep(0x3b), rep(0x3a), rep(0x39), 'あ'}
+	seq := []rune{'あ', '㬢', '㐆', '🈑', 'い', '🈑', '㐆', '㬢', 'あ'}
 	var want []byte
 	prev := byte(0x42)
 	for _, r := range seq {

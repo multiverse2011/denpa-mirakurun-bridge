@@ -8,6 +8,9 @@ jis0208.go
 出典: WHATWG Encoding Standard の EUC-JP の索引
   https://encoding.spec.whatwg.org/#euc-jp
 
+本リポジトリの jis0208.go は、この EUC-JP の索引を Node.js の
+TextDecoder('euc-jp') で逆引きして生成し、ARIB の区点の表に合わせて改変したものです。
+
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 This work is licensed under a Creative Commons Attribution 4.0 International
 License: https://creativecommons.org/licenses/by/4.0/
@@ -23,6 +26,7 @@ EPG 用の数点は ariblib の表によります。
 MIT License
 
 Copyright (c) 2026 denpa contributors
+Copyright (c) 2021 magicxqq
 Copyright (c) 2022 magicxqq
 Copyright (c) 2013 youzaka
 
