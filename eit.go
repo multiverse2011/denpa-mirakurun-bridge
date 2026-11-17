@@ -385,9 +385,9 @@ func mjdTime(ms int64) []byte {
 	return []byte{byte(mjd >> 8), byte(mjd), bcd(int(rest / 3600)), bcd(int(rest/60) % 60), bcd(int(rest % 60))}
 }
 
-// bcdDuration は尺 (ms) を BCD の 3 バイトにする
+// bcdDuration は尺 (ms) を BCD の 3 バイトにする。時は BCD の 2 桁までなので 99:59:59 で頭打ちにする
 func bcdDuration(ms int64) []byte {
-	total := ms / 1000
+	total := min(ms/1000, 99*3600+59*60+59)
 	return []byte{bcd(int(total / 3600)), bcd(int(total/60) % 60), bcd(int(total % 60))}
 }
 

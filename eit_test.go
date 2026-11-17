@@ -53,6 +53,23 @@ func TestAribText(t *testing.T) {
 	}
 }
 
+// 尺が 100 時間以上でも BCD の時 (2 桁) を壊さず、99:59:59 で頭打ちにする
+func TestBCDDurationCapsAt99Hours(t *testing.T) {
+	cap := []byte{0x99, 0x59, 0x59}
+	for _, c := range []struct {
+		ms   int64
+		want []byte
+	}{
+		{99*time.Hour.Milliseconds() + 59*time.Minute.Milliseconds() + 59*time.Second.Milliseconds(), cap},
+		{100 * time.Hour.Milliseconds(), cap},
+		{168 * time.Hour.Milliseconds(), cap},
+	} {
+		if got := bcdDuration(c.ms); !bytes.Equal(got, c.want) {
+			t.Fatalf("%v: % x != % x", c.ms, got, c.want)
+		}
+	}
+}
+
 // 制御文字は ARIB のエスケープと紛れるので '?' に、改行は APR、タブは空白にする
 func TestAribControlCharacters(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
