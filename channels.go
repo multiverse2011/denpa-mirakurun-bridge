@@ -15,13 +15,17 @@ type DenpaChannel struct {
 	} `json:"services"`
 }
 
+type MirakurunService struct {
+	ServiceID int    `json:"serviceId"`
+	NetworkID int    `json:"networkId"`
+	Type      int    `json:"type"`
+	Name      string `json:"name"`
+}
+
 type MirakurunChannel struct {
-	Type     string `json:"type"`
-	Channel  string `json:"channel"`
-	Services []struct {
-		ServiceID int `json:"serviceId"`
-		NetworkID int `json:"networkId"`
-	} `json:"services"`
+	Type     string             `json:"type"`
+	Channel  string             `json:"channel"`
+	Services []MirakurunService `json:"services"`
 }
 
 var (

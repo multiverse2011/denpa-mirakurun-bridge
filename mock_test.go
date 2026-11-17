@@ -39,15 +39,17 @@ type mockRequest struct {
 
 type mockMirakurun struct {
 	*httptest.Server
-	mu       sync.Mutex
-	devices  []*mockDevice
-	channels []MirakurunChannel
-	requests []mockRequest
-	events   []chan struct{}
-	seq      int
-	stall    bool // 最初の塊のあと何も送らない (チューナーが固まった)
-	burst    bool // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
-	hang     bool // 応答ヘッダを返さない (Mirakurun が固まった)
+	mu         sync.Mutex
+	devices    []*mockDevice
+	channels   []MirakurunChannel
+	requests   []mockRequest
+	events     []chan struct{}
+	seq        int
+	stall      bool         // 最初の塊のあと何も送らない (チューナーが固まった)
+	burst      bool         // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
+	hang       bool         // 応答ヘッダを返さない (Mirakurun が固まった)
+	programs   []epgProgram // /api/programs が返す番組表
+	noPrograms bool         // /api/programs を 404 にする (合成できないときの試験)
 }
 
 func newMock(tuners [][]string, channels []MirakurunChannel) *mockMirakurun {
@@ -130,6 +132,19 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/channels":
 		send(200, m.channels)
+		return
+	case "/api/programs":
+		m.mu.Lock()
+		programs, missing := m.programs, m.noPrograms
+		m.mu.Unlock()
+		if missing {
+			send(404, map[string]string{"error": "Not Found"})
+			return
+		}
+		if programs == nil {
+			programs = []epgProgram{}
+		}
+		send(200, programs)
 		return
 	case "/api/tuners":
 		m.mu.Lock()

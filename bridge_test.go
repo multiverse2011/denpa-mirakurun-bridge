@@ -16,19 +16,10 @@ import (
 	"time"
 )
 
-func services(networkID int, ids ...int) []struct {
-	ServiceID int `json:"serviceId"`
-	NetworkID int `json:"networkId"`
-} {
-	var out []struct {
-		ServiceID int `json:"serviceId"`
-		NetworkID int `json:"networkId"`
-	}
+func services(networkID int, ids ...int) []MirakurunService {
+	var out []MirakurunService
 	for _, id := range ids {
-		out = append(out, struct {
-			ServiceID int `json:"serviceId"`
-			NetworkID int `json:"networkId"`
-		}{id, networkID})
+		out = append(out, MirakurunService{ServiceID: id, NetworkID: networkID, Type: 1})
 	}
 	return out
 }
