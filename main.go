@@ -46,6 +46,14 @@ func run() error {
 	if err != nil || keylessTuners < 0 {
 		return errors.New(msg.t("KEYLESS_TUNERS must be an integer of 0 or more (got %s)", "KEYLESS_TUNERS は 0 以上の整数で指定してください (指定値: %s)", os.Getenv("KEYLESS_TUNERS")))
 	}
+	var decodeKeyless bool
+	switch env("DECODE_KEYLESS", "0") {
+	case "0":
+	case "1":
+		decodeKeyless = true
+	default:
+		return errors.New(msg.t("DECODE_KEYLESS must be 1 or 0 (got %s)", "DECODE_KEYLESS は 1 か 0 で指定してください (指定値: %s)", os.Getenv("DECODE_KEYLESS")))
+	}
 	// denpa のエージェントと同じ既定 (6 時間)。0 なら待たない
 	shutdownWait, err := strconv.ParseInt(env("SHUTDOWN_WAIT", "21600000"), 10, 64)
 	// 上限は time.Duration に収まる長さ (超えると負に回って待たなくなる)
@@ -76,6 +84,7 @@ func run() error {
 		AllowedHosts:  allowed,
 		Version:       env("DENPA_VERSION", "bridge-"+version),
 		KeylessTuners: keylessTuners,
+		DecodeKeyless: decodeKeyless,
 		English:       msg.en,
 		Pairing:       pairing,
 	})
