@@ -53,18 +53,26 @@ func TestAribText(t *testing.T) {
 	}
 }
 
-// 制御文字は ARIB のエスケープと紛れるので、'?' に置き換える
+// 制御文字は ARIB のエスケープと紛れるので '?' に、改行は APR、タブは空白にする
 func TestAribControlCharacters(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"A\x1bB", "A?B"},
 		{"あ\x1bい", "あ?い"},
-		{"\x00\x7f\t\n", "????"},
+		{"\x00\x7f", "??"},
+		{"A\tB", "A B"},
+		{"A\nB", "A\nB"},
+		{"A\r\nB", "A\nB"},
+		{"あ\r\nい", "あ\nい"},
 	} {
 		got, _ := encodeArib(c.in)
 		want, _ := encodeArib(c.want)
 		if !bytes.Equal(got, want) {
 			t.Fatalf("%q: % x != % x", c.in, got, want)
 		}
+	}
+	// CRLF は APR 1 つにまとめる
+	if got, _ := encodeArib("A\r\nB"); bytes.Count(got, []byte{0x0d}) != 1 {
+		t.Fatalf("CRLF: % x", got)
 	}
 }
 
@@ -275,6 +283,44 @@ func TestEITLastSectionNumber(t *testing.T) {
 	for i, l := range last {
 		if l != maxNumber {
 			t.Fatalf("last_section_number %d (section %d、最後は %d)", l, numbers[i], maxNumber)
+		}
+	}
+}
+
+// hasSynthesizablePrograms の判定が、実際に serviceEITSections がイベントを出すかと一致する
+func TestHasSynthesizablePrograms(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
+	midnight := jstMidnight(now)
+	hour := time.Hour.Milliseconds()
+	day := 24 * hour
+	one := func(eventID int, start, duration int64) []epgProgram {
+		return []epgProgram{{EventID: eventID, StartAt: start, Duration: duration}}
+	}
+	cases := []struct {
+		name     string
+		programs []epgProgram
+		want     bool
+	}{
+		{"空", nil, false},
+		{"過去のみ", one(1, now-2*hour, hour), false},
+		{"不正値のみ", []epgProgram{{EventID: 1}, {EventID: 2, StartAt: now, Duration: 0}}, false},
+		{"8 日超のみ", one(1, midnight+9*day, hour), false},
+		{"前のセグメントに始まって放送中", one(1, now-2*hour, 4*hour), true},
+		{"いま開始", one(1, now, hour), true},
+		{"夜をまたいで放送中", one(1, now-hour, 20*hour), true},
+		{"次の番組のみ", one(1, now+hour, hour), true},
+		{"8 日ちょうど", one(1, midnight+8*day, hour), false},
+		{"7 日後 21:00", one(1, midnight+7*day+21*hour, hour), true},
+		{"過去と未来", append(one(1, now-2*hour, hour), one(2, now+hour, hour)...), true},
+	}
+	for _, c := range cases {
+		got := hasSynthesizablePrograms(c.programs, now)
+		events := 0
+		for _, sec := range serviceEITSections(epgService{NetworkID: 4, ServiceID: 101}, c.programs, now) {
+			events += len(eventIDs(sec))
+		}
+		if got != c.want || got != (events > 0) {
+			t.Fatalf("%s: has=%v events=%d want=%v", c.name, got, events, c.want)
 		}
 	}
 }

@@ -125,9 +125,22 @@ func encodeArib(s string) (out []byte, cuts []int) {
 		}
 		mode = to
 	}
+	skipLF := false
 	for _, r := range s {
+		if skipLF {
+			skipLF = false
+			if r == '\n' {
+				continue // CRLF は 1 回の改行にする
+			}
+		}
 		switch {
-		case r < 0x20 || r == 0x7f: // 制御文字は ARIB のエスケープと紛れるので '?' にする
+		case r == '\r' || r == '\n': // 改行。denpa も 0x0D を改行として読む
+			put(0x0d) // APR
+			skipLF = r == '\r'
+		case r == '\t': // 空白にする
+			set(modeAlnum)
+			put(' ')
+		case r < 0x20 || r == 0x7f: // その他の制御文字は ARIB のエスケープと紛れるので '?' にする
 			set(modeAlnum)
 			put('?')
 		case r < 0x80:
