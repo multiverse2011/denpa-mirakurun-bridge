@@ -119,6 +119,7 @@ Mirakurun のデバイスやカードリーダー、`network_mode: host` など�
 | `CHANNELS_FILE` | `data/channels.json` | denpa から受け取ったチャンネル一覧の保存先です。Docker イメージでは `/config/channels.json` です |
 | `AGENT_TLS` | `1` | `0` にすると TLS を使わず HTTP で待ち受けます (v2.27.0 以前の denpa 向け) |
 | `AGENT_PAIR_TOKEN` | なし | denpa と組むための合言葉です。未指定なら自動で生成し、`CHANNELS_FILE` と同じ場所の `tls/pair-token` に保存します |
+| `AGENT_NAME` | なし | `/denpa/about` の `name` に返すエージェントの名前です。空なら返さず、denpa が URL のホスト名で埋めます |
 | `ALLOWED_HOSTS` | なし | `AGENT_TLS=0` のときに受け付けるホスト名です。IP アドレス・`localhost`・ドットを含まない名前・`.local` などは指定しなくても受け付けます |
 | `DENPA_VERSION` | `bridge-<バージョン>` | `/denpa/about` が返すバージョンです。denpa のバージョンと揃えると、不一致の通知が出なくなります |
 | `SHUTDOWN_WAIT` | `21600000` (6 時間) | 録画中に止めようとしたとき、録画が終わるまで待つ上限 (ミリ秒) です。待つ間も要求は受け付けます。`0` なら待ちません。denpa のエージェントと同じです |
@@ -131,7 +132,8 @@ denpa とは TLS で接続し、組んだ denpa (クライアント証明書で�
 - 鍵、自己署名の証明書、合言葉、組んだ denpa の証明書の指紋は、`CHANNELS_FILE` と同じ場所の `tls/` (Docker イメージでは `/config/tls`) に保存します。証明書は一度作ったら作り直しません
 - まだどの denpa とも組んでいなければ、起動時に組むための URL (`https://<ホスト名>:25252#pair=<合言葉>`) を標準出力に表示します
 - 合言葉を変えるには、`pair-token` を削除して再起動します
-- 組んだ denpa を外すには、`clients` からその行を削除して再起動します
+- denpa の設定からこのエージェントを削除すると、denpa は `DELETE /denpa/pair` を送ります。ブリッジは呼んできた denpa の証明書を `clients` から消して 204 を返します。denpa に届かないときは、`clients` からその行を削除して再起動します
+- `DELETE /denpa/pair` は組んだ denpa からしか呼べません。平文 (`AGENT_TLS=0`) にはペアリングが無いため 403 を返します
 - TLS ではブラウザがクライアント証明書を提示できず接続できないため、Host ヘッダーと `Content-Type` は検査しません
 
 ### 古い denpa と HTTP で接続する
@@ -142,6 +144,7 @@ v2.27.0 以前の denpa は HTTP でしか接続できないため、`AGENT_TLS:
 
 - **優先度**: denpa の優先度を `PRIORITY_MAP` で変換し、`X-Mirakurun-Priority` として渡します。チューナーの共有や割り込みは Mirakurun に任せます。ただし空きが無いとき、このブリッジ経由の利用者で、denpa の優先度が要求より低いものしかいないチューナーがあれば、その利用者をブリッジが切ってから Mirakurun に頼みます (`PRIORITY_MAP` で同じ値に潰しても、ライブが番組表の取得を取り上げられるように)。取り上げている間に来た、それより優先度の低い同じ種別の要求は 409 で返します (切られた側の掛け直しに取り返されないように)。Mirakurun の 503 は 409 (空き待ち) に変換して返します
 - **チャンネル**: 地上波は物理チャンネル番号で対応づけます (`T27` ↔ `27`)。衛星は Mirakurun が TSID を返さないため、denpa から受け取ったチャンネルのサービス ID で照合します (`BS15:16625` ↔ `BS15_0` など)
+- **名前とバージョン**: `/denpa/about` は `AGENT_NAME` があれば `name` に返します。`runtime` は `denpa-mirakurun-bridge <ビルド時のバージョン> / Go <版> / Mirakurun <URL>` です。`version` は `DENPA_VERSION` の値を返します
 - **番組表・ロゴ・スキャン**: `epg`・`logo`・`scan` の要求は、優先度 0 以上で使用中のチャンネルに相乗りできます。新たにチューナーを使うのは `KEYLESS_TUNERS` の数までで、BS と CS は合わせて数えます。これらの要求は既定では復号しません (`decode=0`)。`DECODE_KEYLESS=1` にすると `decode=1` で流し、上流でライブと同じ復号済みストリームを共有できます
 - **番組表の合成 (実験的)**: `EPG_MODE=synthetic` のときは、`use=epg` を Mirakurun の `/api/programs` から組み立てた EIT (PAT・SDT 付き) として返します。チューナーを使わないので `KEYLESS_TUNERS` の予算も消費しません。地上波は中継内の全局、BS・CS は同じネットワークの全局ぶんを含めます。番組表が取得できないときは従来のストリーム中継に落ち、ログに残します
 - **ストリームの終了**: Mirakurun 側でストリームが終わったときは、denpa が正常終了と誤認しないよう接続を切断します。正常終了として扱うのは `after` で次の配信に引き継ぐときだけです

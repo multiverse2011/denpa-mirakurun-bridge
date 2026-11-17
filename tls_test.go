@@ -139,6 +139,84 @@ func TestPairRefusals(t *testing.T) {
 	}
 }
 
+func deletePair(t *testing.T, c *http.Client, base string) int {
+	t.Helper()
+	req, _ := http.NewRequest("DELETE", base+"/denpa/pair", nil)
+	res, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+// 削除: 呼んできた denpa だけを clients から消し、204 を返す。組んでいない相手は呼べない
+func TestUnpairRemovesOnlyTheCaller(t *testing.T) {
+	dir := t.TempDir()
+	p, base := setupTLS(t, dir, "")
+	c1, d1 := denpaClient(t)
+	c2, d2 := denpaClient(t)
+	for _, x := range []struct {
+		c *http.Client
+		d string
+	}{{c1, d1}, {c2, d2}} {
+		if status, _ := postPair(t, x.c, base, x.d, pairProof(p.token, "client", p.fingerprint, x.d)); status != 200 {
+			t.Fatalf("pair %s: %d", x.d[:8], status)
+		}
+	}
+
+	// 組んでいない相手からの DELETE は gate が断る
+	c3, _ := denpaClient(t)
+	if status := deletePair(t, c3, base); status != 403 {
+		t.Fatalf("unpaired DELETE: %d", status)
+	}
+
+	if status := deletePair(t, c1, base); status != 204 {
+		t.Fatalf("DELETE: %d", status)
+	}
+	if status, _ := getChannels(t, c1, base); status != 403 {
+		t.Fatalf("removed denpa must be refused: %d", status)
+	}
+	if status, _ := getChannels(t, c2, base); status != 200 {
+		t.Fatalf("other denpa must stay paired: %d", status)
+	}
+
+	again, err := LoadPairing(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.clients[d1] || !again.clients[d2] {
+		t.Fatalf("clients: %v", again.clients)
+	}
+}
+
+// 書き込めなければ、消した組を戻す
+func TestUnpairSaveFailureKeepsThePairing(t *testing.T) {
+	dir := t.TempDir()
+	p, base := setupTLS(t, dir, "")
+	c, d := denpaClient(t)
+	if status, _ := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d)); status != 200 {
+		t.Fatalf("pair: %d", status)
+	}
+	// clients をディレクトリに置き換えて、rename を失敗させる
+	clients := filepath.Join(dir, "clients")
+	if err := os.Remove(clients); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(clients, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if status := deletePair(t, c, base); status != 500 {
+		t.Fatalf("DELETE: %d", status)
+	}
+	if !p.clients[d] {
+		t.Fatal("保存に失敗したら組を戻すこと")
+	}
+	if status, _ := getChannels(t, c, base); status != 200 {
+		t.Fatalf("rolled back denpa must stay paired: %d", status)
+	}
+}
+
 func TestPairTokenFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	p, err := LoadPairing(dir, " given \n")

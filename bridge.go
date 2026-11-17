@@ -30,6 +30,7 @@ type Config struct {
 	ChannelsFile  string
 	AllowedHosts  []string
 	Version       string
+	AgentName     string // /denpa/about の name。空なら返さない (denpa は URL のホスト名で埋める)
 	KeylessTuners int
 	EPGMode       string // "broadcast" (既定) か "synthetic" (実験的: use=epg を Mirakurun の番組表から合成)
 	DecodeKeyless bool   // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
@@ -892,6 +893,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "POST /denpa/decode":
 		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
 			"録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)")})
+	case "DELETE /denpa/pair":
+		b.unpair(w, r)
 	case "POST /denpa/raw/probe":
 		// 元の TS の置き場は見ない (録画後に復号しない)。denpa は 404 で本文が "not found" 以外のときだけ
 		// 「置き場が見えない」とし、それ以外の失敗は「確かめられない (null)」として扱う (scramble.ts の probeRaw)。
@@ -920,10 +923,15 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if arch == "amd64" {
 			arch = "x64"
 		}
-		writeJSON(w, 200, map[string]any{
+		out := map[string]any{
 			"version": b.cfg.Version, "os": osName, "arch": arch,
-			"runtime": fmt.Sprintf("Go %s / Mirakurun %s", runtime.Version(), b.cfg.MirakurunURL), "ccidDriver": nil,
-		})
+			"runtime":    fmt.Sprintf("denpa-mirakurun-bridge %s / Go %s / Mirakurun %s", version, runtime.Version(), b.cfg.MirakurunURL),
+			"ccidDriver": nil,
+		}
+		if name := strings.TrimSpace(b.cfg.AgentName); name != "" {
+			out["name"] = name
+		}
+		writeJSON(w, 200, out)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
