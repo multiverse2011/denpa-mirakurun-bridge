@@ -181,7 +181,7 @@ func TestPriorityMapAndDecode(t *testing.T) {
 
 func TestDecodeKeyless(t *testing.T) {
 	e := setup(t, twoGR, grChannels, "", 9, func(b *Bridge) { b.cfg.DecodeKeyless = true })
-	for _, c := range []struct{ ch, use string }{{"T27", "epg T27"}, {"T21", "scan T21"}} {
+	for _, c := range []struct{ ch, use string }{{"T27", "epg T27"}, {"T21", "scan T21"}, {"T27", "logo GR/T27"}} {
 		open(t, e.base, q("GR", c.ch, "3", c.use))
 		if r := e.mk.lastRequest(); r.Decode != "1" || !strings.HasSuffix(r.Agent, "("+c.use+")") {
 			t.Fatalf("%s: %+v", c.use, r)
