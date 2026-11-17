@@ -32,6 +32,7 @@ type Config struct {
 	Version       string
 	KeylessTuners int
 	EPGMode       string // "broadcast" (既定) か "synthetic" (実験的: use=epg を Mirakurun の番組表から合成)
+	DecodeKeyless bool   // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
 	English       bool
 	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
@@ -613,7 +614,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decode := "1"
-	if keyless(use) {
+	if keyless(use) && !b.cfg.DecodeKeyless {
 		decode = "0"
 	}
 	mkPriority := mapPriority(priority, b.cfg.PriorityMap)
@@ -891,6 +892,17 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "POST /denpa/decode":
 		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
 			"録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)")})
+	case "POST /denpa/raw/probe":
+		// 元の TS の置き場は見ない (録画後に復号しない)。denpa は 404 で本文が "not found" 以外のときだけ
+		// 「置き場が見えない」とし、それ以外の失敗は「確かめられない (null)」として扱う (scramble.ts の probeRaw)。
+		// 501 にしておくと、設定の「受信」に警告が出ない
+		writeJSON(w, 501, map[string]string{"error": b.msg.t("the bridge does not read the raw TS directory (it does not decode after recording)",
+			"ブリッジは元の TS の置き場を読みません (録画後の復号をしないため)")})
+	case "POST /denpa/card/confirm":
+		// カードを持たない。denpa は /denpa/card の readers が空のエージェントを問い合わせ先に選ばないが、
+		// 来ても未対応と明示する (contracts.ts の confirmCardContract)
+		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("the bridge has no B-CAS card",
+			"ブリッジは B-CAS カードを持ちません")})
 	case "GET /denpa/logs":
 		b.mu.Lock()
 		lines := slices.Clone(b.logs)

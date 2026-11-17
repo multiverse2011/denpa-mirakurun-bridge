@@ -170,6 +170,16 @@ func TestPriorityMapAndDecode(t *testing.T) {
 	}
 }
 
+func TestDecodeKeyless(t *testing.T) {
+	e := setup(t, twoGR, grChannels, "", 9, func(b *Bridge) { b.cfg.DecodeKeyless = true })
+	for _, c := range []struct{ ch, use string }{{"T27", "epg T27"}, {"T21", "scan T21"}, {"T27", "logo GR/T27"}} {
+		open(t, e.base, q("GR", c.ch, "3", c.use))
+		if r := e.mk.lastRequest(); r.Decode != "1" || !strings.HasSuffix(r.Agent, "("+c.use+")") {
+			t.Fatalf("%s: %+v", c.use, r)
+		}
+	}
+}
+
 func TestSameChannelShared(t *testing.T) {
 	e := setup(t, twoGR, grChannels, "", 9)
 	open(t, e.base, q("GR", "T27", "10", "rec 1"))
@@ -304,6 +314,79 @@ func TestHostAndContentType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	if res, _ := http.DefaultClient.Do(req); res.StatusCode != 400 {
 		t.Fatal(res.StatusCode)
+	}
+}
+
+// denpaRawProbeVerdict は denpa v2.51.0 の probeRaw (scramble.ts) の判定を写したもの。
+// 結果は visible / invisible / unknown のいずれか。
+// 本文が JSON でなければ unknown。404 で error が文字列かつ "not found" 以外なら invisible。
+func denpaRawProbeVerdict(status int, body map[string]any, jsonBody, shaMatches bool) string {
+	if !jsonBody {
+		return "unknown"
+	}
+	if status == 200 {
+		if _, ok := body["sha256"].(string); ok {
+			if shaMatches {
+				return "visible"
+			}
+			return "invisible"
+		}
+	}
+	if status == 404 {
+		if text, ok := body["error"].(string); ok && text != "not found" {
+			return "invisible"
+		}
+	}
+	return "unknown"
+}
+
+func TestAgentAPIsAddedInV251(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	post := func(path, body string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", e.base+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return res.StatusCode, out
+	}
+	// 置き場は見ないので「確かめられない」。「見えない (警告になる)」ではない
+	status, body := post("/denpa/raw/probe", `{"path":".denpa/probe-1-abc"}`)
+	if status != 501 || denpaRawProbeVerdict(status, body, true, false) != "unknown" {
+		t.Fatalf("raw/probe: %d %v", status, body)
+	}
+	// 判定の写しが denpa と一致すること (404 は本文で意味が変わる)
+	for _, c := range []struct {
+		status           int
+		body             map[string]any
+		json, shaMatches bool
+		want             string
+	}{
+		{404, map[string]any{"error": "not found"}, true, false, "unknown"},
+		{404, map[string]any{"error": "missing"}, true, false, "invisible"},
+		{404, map[string]any{"error": ""}, true, false, "invisible"},
+		{404, map[string]any{}, true, false, "unknown"},
+		{200, map[string]any{"sha256": "abc"}, true, true, "visible"},
+		{200, map[string]any{"sha256": "abc"}, true, false, "invisible"},
+		{200, map[string]any{}, true, false, "unknown"},
+		{501, map[string]any{"error": "no"}, true, false, "unknown"},
+		{200, nil, false, false, "unknown"},
+	} {
+		if got := denpaRawProbeVerdict(c.status, c.body, c.json, c.shaMatches); got != c.want {
+			t.Fatalf("%d %v: %s", c.status, c.body, got)
+		}
+	}
+	// カードも持たない
+	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
+	if status != 501 || body["ok"] != false {
+		t.Fatalf("card/confirm: %d %v", status, body)
 	}
 }
 
