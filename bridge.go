@@ -31,6 +31,7 @@ type Config struct {
 	AllowedHosts  []string
 	Version       string
 	KeylessTuners int
+	DecodeKeyless bool // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
 	English       bool
 	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
@@ -601,7 +602,7 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decode := "1"
-	if keyless(use) {
+	if keyless(use) && !b.cfg.DecodeKeyless {
 		decode = "0"
 	}
 	mkPriority := mapPriority(priority, b.cfg.PriorityMap)
