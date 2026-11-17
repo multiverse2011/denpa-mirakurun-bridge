@@ -75,6 +75,9 @@ type epgService struct {
 	Name      string
 }
 
+// aribCell は ARIB の 2 バイト集合の指示バイトと区点 (0x20 を足した値)
+type aribCell struct{ designator, ku, ten byte }
+
 // aribAliases は JIS と Unicode で食い違う字。WHATWG の EUC-JP が返す字から引く
 var aribAliases = map[rune]rune{
 	'〜': '～', // 〜
@@ -88,11 +91,11 @@ var aribAliases = map[rune]rune{
 // 初期状態は漢字 (denpa の synth.ts と同じ)。英数は MSZ で半角にしてから ESC ( J で入る。
 func encodeArib(s string) (out []byte, cuts []int) {
 	const (
-		modeKanji = iota
-		modeAlnum
-		modeKana
+		modeAlnum = -1
+		modeKana  = -2
+		aribKanji = 0x42 // 漢字集合
 	)
-	mode, half := modeKanji, false
+	mode, half := aribKanji, false
 	put := func(bs ...byte) { out = append(out, bs...) }
 	set := func(to int) {
 		if to == modeAlnum {
@@ -107,21 +110,26 @@ func encodeArib(s string) (out []byte, cuts []int) {
 			mode = modeAlnum
 			return
 		}
-		if mode == to && !half {
-			return
-		}
 		if to == modeKana {
+			if mode == modeKana {
+				return
+			}
 			if half {
 				put(0x8a) // NSZ
 				half = false
 			}
 			put(0x1b, '(', 'I')
-		} else {
-			put(0x1b, '$', 'B')
-			if half {
-				put(0x8a)
-				half = false
-			}
+			mode = modeKana
+			return
+		}
+		// 2 バイト集合 (漢字・追加記号・JIS X 0213)
+		if mode == to && !half {
+			return
+		}
+		put(0x1b, '$', byte(to))
+		if half {
+			put(0x8a)
+			half = false
 		}
 		mode = to
 	}
@@ -150,17 +158,23 @@ func encodeArib(s string) (out []byte, cuts []int) {
 			set(modeKana)
 			put(byte(0x21 + r - 0xff61))
 		default:
-			set(modeKanji)
 			code, ok := jis0208[r]
 			if !ok {
 				if a, found := aribAliases[r]; found {
 					code, ok = jis0208[a]
 				}
 			}
-			if !ok {
-				code = jis0208['？'] // 表に無い字は全角の疑問符にする
+			if ok {
+				set(aribKanji)
+				put(byte(code>>8), byte(code))
+			} else if cell, found := aribExtra[r]; found {
+				set(int(cell.designator))
+				put(cell.ku, cell.ten)
+			} else {
+				set(aribKanji)
+				code = jis0208['？'] // ARIB で表せない字は全角の疑問符にする
+				put(byte(code>>8), byte(code))
 			}
-			put(byte(code>>8), byte(code))
 		}
 		cuts = append(cuts, len(out))
 	}
@@ -200,19 +214,37 @@ func splitArib(s string, max int) [][]byte {
 	return parts
 }
 
+// splitAribString は符号化した長さが max バイトに収まる先頭と、残りの文字列を返す。
+// CRLF の間では分けない (先頭と残りで改行が 2 つにならないように)
+func splitAribString(s string, max int) (head, tail string) {
+	runes := []rune(s)
+	lo, hi := 0, len(runes)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		enc, _ := encodeArib(string(runes[:mid]))
+		if len(enc) <= max {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo > 0 && lo < len(runes) && runes[lo] == '\n' && runes[lo-1] == '\r' {
+		lo++
+	}
+	return string(runes[:lo]), string(runes[lo:])
+}
+
 // sizedText は長さ 1 バイト付きの文字列 (SI の記述子の形)
 func sizedText(b []byte) []byte {
 	return append([]byte{byte(len(b))}, b...)
 }
 
-// shortEventDescriptor は番組名と短い説明。名前を優先し、入りきらない説明は切る
-func shortEventDescriptor(name, description string) []byte {
-	nameBytes := truncateArib(name, 250)
-	descBytes := truncateArib(description, 250-len(nameBytes))
-	body := []byte{'j', 'p', 'n', byte(len(nameBytes))}
-	body = append(body, nameBytes...)
-	body = append(body, byte(len(descBytes)))
-	body = append(body, descBytes...)
+// shortEventDescriptor は番組名と説明 (どちらも符号化済み)
+func shortEventDescriptor(name, description []byte) []byte {
+	body := []byte{'j', 'p', 'n', byte(len(name))}
+	body = append(body, name...)
+	body = append(body, byte(len(description)))
+	body = append(body, description...)
 	return append([]byte{0x4d, byte(len(body))}, body...)
 }
 
@@ -354,8 +386,25 @@ func eitEventBytes(p epgProgram, runningStatus int) []byte {
 			d = append(d, b...)
 		}
 	}
-	add(shortEventDescriptor(p.Name, p.Description))
-	for _, b := range extendedEventDescriptors(p.Extended) {
+	nameBytes := truncateArib(p.Name, 250)
+	head, tail := splitAribString(p.Description, max(0, 250-len(nameBytes)))
+	descBytes, _ := encodeArib(head)
+	add(shortEventDescriptor(nameBytes, descBytes))
+
+	extended := p.Extended
+	if tail != "" {
+		// short_event に収まらない後半は、denpa が詳細として表示する extended に移す
+		extended = make(map[string]string, len(p.Extended)+1)
+		for k, v := range p.Extended {
+			extended[k] = v
+		}
+		if existing := extended["番組内容"]; existing != "" {
+			extended["番組内容"] = existing + "\n" + tail
+		} else {
+			extended["番組内容"] = tail
+		}
+	}
+	for _, b := range extendedEventDescriptors(extended) {
 		add(b)
 	}
 	add(contentDescriptor(p.Genres))

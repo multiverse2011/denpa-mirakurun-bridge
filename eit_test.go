@@ -70,6 +70,85 @@ func TestBCDDurationCapsAt99Hours(t *testing.T) {
 	}
 }
 
+// ARIB の追加記号・JIS X 0213 の字 (85 区以降) を「？」に落とさない
+func TestAribExtraCharacters(t *testing.T) {
+	for _, ch := range []string{"🈑", "🈖", "🈀", "🈞", "🈔", "髙", "﨑", "德", "麴", "𠮷"} {
+		r := []rune(ch)[0]
+		cell, ok := aribExtra[r]
+		if !ok {
+			t.Fatalf("%s が aribExtra にありません", ch)
+		}
+		var want []byte
+		if cell.designator != 0x42 {
+			want = append(want, 0x1b, '$', cell.designator)
+		}
+		want = append(want, cell.ku, cell.ten)
+		got, _ := encodeArib(ch)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: % x != % x", ch, got, want)
+		}
+	}
+}
+
+// 長い説明は short_event に収まる分だけを残し、あふれた後半を extended の「番組内容」に移す
+func TestLongDescriptionMovesTailToExtended(t *testing.T) {
+	desc := strings.Repeat("あ", 200) // 400 バイト
+	p := epgProgram{
+		EventID: 1, StartAt: 1, Duration: 1, Name: "テスト", Description: desc,
+		Extended: map[string]string{"番組内容": "前書き"},
+	}
+	ev := eitEventBytes(p, 0)
+
+	nameBytes := truncateArib(p.Name, 250)
+	head, tail := splitAribString(desc, 250-len(nameBytes))
+	if tail == "" {
+		t.Fatal("説明が切られていません")
+	}
+	if head+tail != desc {
+		t.Fatalf("前半と後半が元の説明と一致しません")
+	}
+	headBytes, _ := encodeArib(head)
+
+	var short []byte
+	var ext [][]byte
+	for _, d := range descriptorsOf(ev[12:]) {
+		switch d[0] {
+		case 0x4d:
+			short = d
+		case 0x4e:
+			ext = append(ext, d)
+		}
+	}
+	if short == nil {
+		t.Fatal("short_event_descriptor がありません")
+	}
+	nameLen := int(short[5])
+	descLen := int(short[6+nameLen])
+	if got := short[7+nameLen : 7+nameLen+descLen]; !bytes.Equal(got, headBytes) {
+		t.Fatalf("説明の前半が違います: %d バイト", len(got))
+	}
+	items := extendedItems(t, ext)
+	heading, _ := encodeArib("番組内容")
+	want, _ := encodeArib("前書き\n" + tail)
+	if !bytes.Equal(items[string(heading)], want) {
+		t.Fatalf("extended の番組内容に後半がありません")
+	}
+}
+
+// descriptorsOf は記述子の並びを 1 本ずつに分ける
+func descriptorsOf(data []byte) [][]byte {
+	var out [][]byte
+	for at := 0; at+2 <= len(data); {
+		n := 2 + int(data[at+1])
+		if at+n > len(data) {
+			break
+		}
+		out = append(out, data[at:at+n])
+		at += n
+	}
+	return out
+}
+
 // 制御文字は ARIB のエスケープと紛れるので '?' に、改行は APR、タブは空白にする
 func TestAribControlCharacters(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
