@@ -127,6 +127,9 @@ func encodeArib(s string) (out []byte, cuts []int) {
 	}
 	for _, r := range s {
 		switch {
+		case r < 0x20 || r == 0x7f: // 制御文字は ARIB のエスケープと紛れるので '?' にする
+			set(modeAlnum)
+			put('?')
 		case r < 0x80:
 			set(modeAlnum)
 			put(byte(r))
@@ -525,6 +528,25 @@ func presentFollowing(programs []epgProgram, now int64) (*epgProgram, *epgProgra
 	return present, following
 }
 
+// hasSynthesizablePrograms は、この局の番組が 1 つでも TS に載るか
+// (p/f の「いま」があるか、8 日ぶんの schedule に入る番組があるか)
+func hasSynthesizablePrograms(programs []epgProgram, now int64) bool {
+	if present, _ := presentFollowing(programs, now); present != nil {
+		return true
+	}
+	midnight := jstMidnight(now)
+	current := int((now - midnight) / segmentSpanMS)
+	for _, p := range programs {
+		if p.StartAt <= 0 || p.Duration <= 0 {
+			continue
+		}
+		if s := int((p.StartAt - midnight) / segmentSpanMS); s >= current && s < 2*segmentsPerTable {
+			return true
+		}
+	}
+	return false
+}
+
 // serviceEITSections は 1 局ぶんの EIT を組む。p/f (0x4E) と、いまから 8 日先までの
 // schedule (0x50・0x51)。来ないセグメントを denpa が待ち続けるので、番組の無いセグメントも
 // 空のセクションを 1 本だけ流す
@@ -578,6 +600,8 @@ func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]by
 		}
 	}
 
+	// p/f は EPG の完成度には使われないが、denpa の EpgReader は p/f の番組も番組表に取り込む。
+	// schedule の対象より前に始まった現在の番組を拾うため、present があるときだけ流す
 	if present, following := presentFollowing(sorted, now); present != nil {
 		last := byte(0)
 		if following != nil {

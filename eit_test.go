@@ -53,6 +53,21 @@ func TestAribText(t *testing.T) {
 	}
 }
 
+// 制御文字は ARIB のエスケープと紛れるので、'?' に置き換える
+func TestAribControlCharacters(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"A\x1bB", "A?B"},
+		{"あ\x1bい", "あ?い"},
+		{"\x00\x7f\t\n", "????"},
+	} {
+		got, _ := encodeArib(c.in)
+		want, _ := encodeArib(c.want)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%q: % x != % x", c.in, got, want)
+		}
+	}
+}
+
 func TestExtendedEventSplitting(t *testing.T) {
 	// 日本語 200 文字は 400 バイトなので、1 記述子 (255 バイト) に収まらない
 	desc := extendedEventDescriptors(map[string]string{"番組内容": strings.Repeat("あ", 200)})

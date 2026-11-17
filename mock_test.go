@@ -45,16 +45,19 @@ type mockMirakurun struct {
 	requests      []mockRequest
 	events        []chan struct{}
 	seq           int
-	stall         bool         // 最初の塊のあと何も送らない (チューナーが固まった)
-	burst         bool         // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
-	hang          bool         // 応答ヘッダを返さない (Mirakurun が固まった)
-	programs      []epgProgram // /api/programs が返す番組表
-	noPrograms    bool         // /api/programs を 404 にする (合成できないときの試験)
+	stall         bool           // 最初の塊のあと何も送らない (チューナーが固まった)
+	burst         bool           // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
+	hang          bool           // 応答ヘッダを返さない (Mirakurun が固まった)
+	programs      []epgProgram   // /api/programs が返す番組表
+	programSets   [][]epgProgram // 取得ごとに返す番組表 (あれば programs より優先)
+	noPrograms    bool           // /api/programs を 404 にする (合成できないときの試験)
 	programsDelay time.Duration
 	programsStart chan struct{} // 取得が始まったら 1 つ送る (nil なら送らない)
-	programsCalls int
-	programsLive  int // いま処理中の取得
-	programsPeak  int // 同時に処理した取得の最大
+	// programsRelease があれば、1 本目の取得はここが閉じるまで返らない (2 本目の到着を待つバリア)
+	programsRelease chan struct{}
+	programsCalls   int
+	programsLive    int // いま処理中の取得
+	programsPeak    int // 同時に処理した取得の最大
 }
 
 // programsStats は /api/programs を受けた回数と、同時に処理した最大数
@@ -148,9 +151,13 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 	case "/api/programs":
 		m.mu.Lock()
 		programs, missing := m.programs, m.noPrograms
-		delay, start := m.programsDelay, m.programsStart
+		delay, start, release := m.programsDelay, m.programsStart, m.programsRelease
 		m.programsCalls++
+		if len(m.programSets) > 0 {
+			programs = m.programSets[min(m.programsCalls, len(m.programSets))-1]
+		}
 		m.programsLive++
+		hold := release != nil && m.programsLive == 1
 		if m.programsLive > m.programsPeak {
 			m.programsPeak = m.programsLive
 		}
@@ -168,6 +175,12 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if delay > 0 {
 			time.Sleep(delay)
+		}
+		if hold {
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second): // デッドロックしないよう上限を付ける
+			}
 		}
 		if missing {
 			send(404, map[string]string{"error": "Not Found"})

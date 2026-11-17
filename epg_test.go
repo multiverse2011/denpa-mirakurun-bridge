@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -200,14 +201,18 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 }
 
-// 取得が遅い間も、ほかの要求が epgMu で待たされない (取得はロックの外)
+// 取得が遅い間も、ほかの要求が epgMu で待たされない (取得はロックの外)。
+// 1 本目は 2 本目が到着するまで返らないので、時間ではなく順序で確かめる
 func TestEPGProgramsFetchesWithoutHoldingTheLock(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9)
 	started := make(chan struct{}, 2)
+	release := make(chan struct{})
 	e.mk.mu.Lock()
-	e.mk.programsDelay = 300 * time.Millisecond
 	e.mk.programsStart = started
+	e.mk.programsRelease = release
 	e.mk.mu.Unlock()
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 
 	first := make(chan error, 1)
 	go func() {
@@ -224,13 +229,71 @@ func TestEPGProgramsFetchesWithoutHoldingTheLock(t *testing.T) {
 		_, err := e.b.epgPrograms(context.Background())
 		second <- err
 	}()
-	for _, ch := range []chan error{first, second} {
-		if err := <-ch; err != nil {
+	// 1 本目がバリアで止まっている間に 2 本目が返れば、ロックで待たされていない
+	select {
+	case err := <-second:
+		if err != nil {
 			t.Fatal(err)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("2 本目の取得がロックで待たされています")
+	}
+	unblock()
+	if err := <-first; err != nil {
+		t.Fatal(err)
 	}
 	if calls, peak := e.mk.programsStats(); calls != 2 || peak != 2 {
-		t.Fatalf("取得がロックで直列化されています: calls=%d peak=%d", calls, peak)
+		t.Fatalf("取得が直列化されています: calls=%d peak=%d", calls, peak)
+	}
+}
+
+// 先に始まって遅く終わった取得が、後から始まって先に終わった取得の控えを上書きしない
+func TestEPGProgramsKeepsNewerSnapshot(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	e.mk.mu.Lock()
+	e.mk.programsStart = started
+	e.mk.programsRelease = release
+	e.mk.programSets = [][]epgProgram{{{EventID: 1}}, {{EventID: 2}}}
+	e.mk.mu.Unlock()
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.b.epgPrograms(context.Background())
+		first <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("取得が始まりません")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := e.b.epgPrograms(context.Background())
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("2 本目の取得が返りません")
+	}
+	unblock()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := e.b.epgPrograms(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].EventID != 2 {
+		t.Fatalf("古い取得で控えを上書きしています: %+v", got)
 	}
 }
 
@@ -265,6 +328,26 @@ func TestEPGProgramsIgnoresCallerCancel(t *testing.T) {
 	}
 	if after, _ := e.mk.programsStats(); after != calls {
 		t.Fatalf("控えを使っていません: %d -> %d", calls, after)
+	}
+}
+
+// 対象局の番組が 1 件も無ければ、空の TS を返さず従来の中継に落ちる
+func TestSyntheticEPGFallsBackWithoutPrograms(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{}
+	e.mk.mu.Unlock()
+	o := open(t, e.base, q("GR", "T27", "3", "epg T27"))
+	if o.status != 200 {
+		t.Fatal(o.status)
+	}
+	until(t, func() bool { return e.mk.users(0) == 1 })
+	o.cancel()
+	e.b.mu.Lock()
+	found := slices.ContainsFunc(e.b.logs, func(l logLine) bool { return strings.Contains(l.Text, "番組がありません") })
+	e.b.mu.Unlock()
+	if !found {
+		t.Fatal("フォールバックのログがありません")
 	}
 }
 

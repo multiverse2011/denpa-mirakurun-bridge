@@ -80,13 +80,18 @@ func (b *Bridge) epgPrograms(ctx context.Context) ([]epgProgram, error) {
 		return cached, nil
 	}
 	// 控えは全要求で共有するので、取得は呼び出し元の切断に引きずられない。
-	// 同時に 2 本取っても害はない。期限は b.mk が付ける
+	// 期限は b.mk が付ける。同時に 2 本取ることがあるので、控えは取得を始めた時刻が
+	// 新しいものだけを残す (遅れて終わった古い取得で新しい控えを潰さない)
+	started := time.Now()
 	var list []epgProgram
 	if err := b.mk(context.WithoutCancel(ctx), "/api/programs", &list); err != nil {
 		return nil, err
 	}
 	b.epgMu.Lock()
-	b.epgCached, b.epgCachedAt = list, time.Now()
+	if started.After(b.epgCachedAt) {
+		b.epgCached, b.epgCachedAt = list, started
+	}
+	list = b.epgCached
 	b.epgMu.Unlock()
 	return list, nil
 }
@@ -111,9 +116,21 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 		byService[key] = append(byService[key], p)
 	}
 
+	now := time.Now().UnixMilli()
+	empty := true
+	for _, svc := range services {
+		if hasSynthesizablePrograms(byService[[2]int{svc.NetworkID, svc.ServiceID}], now) {
+			empty = false
+			break
+		}
+	}
+	if empty {
+		b.logf("cannot synthesize EPG for %s %s: Mirakurun returned no programs for its services; relaying Mirakurun's stream", "%s %s の番組表を合成できないので Mirakurun のストリームを中継します: 対象の局の番組がありません", typ, channel)
+		return false
+	}
+
 	// 同じ内容を何度か流す。denpa は番組が増えたときに「揃った」かを見るので、
 	// 1 回だけだと空のセクションが最後に届いたときに判定されないことがある
-	now := time.Now().UnixMilli()
 	ts := newTSWriter()
 	w.Header().Set("Content-Type", "video/MP2T")
 	w.WriteHeader(200)
