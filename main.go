@@ -95,6 +95,7 @@ func run() error {
 		ChannelsFile:  env("CHANNELS_FILE", "data/channels.json"),
 		AllowedHosts:  allowed,
 		Version:       env("DENPA_VERSION", "bridge-"+version),
+		AgentName:     env("AGENT_NAME", ""),
 		KeylessTuners: keylessTuners,
 		EPGMode:       epgMode,
 		DecodeKeyless: decodeKeyless,

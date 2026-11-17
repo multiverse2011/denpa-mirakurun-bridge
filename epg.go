@@ -134,6 +134,8 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 	ts := newTSWriter()
 	w.Header().Set("Content-Type", "video/MP2T")
 	w.WriteHeader(200)
+	// denpa は揃った時点で切るので、最後まで送れたかではなく、送り始めたことを残す
+	b.logf("synthesizing EPG for %s %s from Mirakurun's programs (%d services, no tuner)", "%s %s の番組表を合成して送ります (%d 局、チューナー不使用)", typ, channel, len(services))
 	rc := http.NewResponseController(w)
 	for pass := 0; pass < 3; pass++ {
 		if pass > 0 {
@@ -160,6 +162,5 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 			return true
 		}
 	}
-	b.logf("served EPG for %s %s from Mirakurun's programs (%d services, no tuner)", "%s %s の番組表を Mirakurun の番組表から合成しました (%d 局、チューナー不使用)", typ, channel, len(services))
 	return true
 }

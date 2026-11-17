@@ -256,3 +256,40 @@ func (b *Bridge) pair(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]string{"proof": pairProof(p.token, "agent", p.fingerprint, client)})
 }
+
+// unpair は呼んできた denpa の指紋を clients から消す。denpa の設定でこのエージェントを削除したときに呼ばれる。
+// 組んでいない相手は gate が断る。平文 (AGENT_TLS=0) では相手を見分けられないので断る
+func (b *Bridge) unpair(w http.ResponseWriter, r *http.Request) {
+	p := b.cfg.Pairing
+	if p == nil {
+		writeJSON(w, 403, map[string]string{"error": b.msg.t("pairing is available only with TLS (AGENT_TLS=1)",
+			"ペアリングは TLS (AGENT_TLS=1) のときだけです")})
+		return
+	}
+	peer := peerFingerprint(r)
+	p.mu.Lock()
+	if !p.clients[peer] {
+		p.mu.Unlock()
+		writeJSON(w, 403, map[string]any{"paired": false, "error": b.msg.t(
+			"not paired with this denpa", "この denpa とは組んでいません")})
+		return
+	}
+	delete(p.clients, peer)
+	lines := slices.Sorted(maps.Keys(p.clients))
+	var data []byte
+	if len(lines) > 0 {
+		data = []byte(strings.Join(lines, "\n") + "\n")
+	}
+	err := writePrivate(filepath.Join(p.dir, "clients"), data)
+	if err != nil {
+		p.clients[peer] = true
+	}
+	p.mu.Unlock()
+	if err != nil {
+		b.logf("cannot forget the paired denpa: %v", "組んだ denpa を忘れられません: %v", err)
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	b.logf("unpaired denpa (certificate %s…)", "denpa (証明書 %s…) との組を外しました", peer[:min(16, len(peer))])
+	w.WriteHeader(204)
+}

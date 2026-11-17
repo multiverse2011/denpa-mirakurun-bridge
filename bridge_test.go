@@ -390,6 +390,73 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 	}
 }
 
+func TestAboutNameAndRuntime(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.AgentName = " 書斎 " })
+	res, err := http.Get(e.base + "/denpa/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out["name"] != "書斎" {
+		t.Fatalf("name: %v", out["name"])
+	}
+	runtime, _ := out["runtime"].(string)
+	if !strings.HasPrefix(runtime, "denpa-mirakurun-bridge "+version+" / Go ") || !strings.HasSuffix(runtime, " / 上流 "+e.mk.URL) {
+		t.Fatalf("runtime: %q", runtime)
+	}
+	en := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.msg = messages{en: true} })
+	resEN, err := http.Get(en.base + "/denpa/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resEN.Body.Close()
+	outEN := map[string]any{}
+	if err := json.NewDecoder(resEN.Body).Decode(&outEN); err != nil {
+		t.Fatal(err)
+	}
+	if runtime, _ := outEN["runtime"].(string); !strings.HasSuffix(runtime, " / upstream "+en.mk.URL) {
+		t.Fatalf("runtime (en): %q", runtime)
+	}
+
+	// 空なら name を返さない (denpa は URL のホスト名で埋める)
+	plain := setup(t, oneGR, grChannels, "", 9)
+	res, err = http.Get(plain.base + "/denpa/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	out = map[string]any{}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["name"]; ok {
+		t.Fatalf("name must be omitted: %v", out["name"])
+	}
+}
+
+// 平文にはペアリングが無いので、DELETE /denpa/pair は断る
+func TestUnpairRequiresTLS(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	req, _ := http.NewRequest("DELETE", e.base+"/denpa/pair", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 403 {
+		t.Fatalf("status: %d", res.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "TLS") {
+		t.Fatalf("error: %v", body)
+	}
+}
+
 func TestHostAllowed(t *testing.T) {
 	for _, h := range []string{"192.168.1.5:25252", "[fd00::5]:25252", "localhost", "tuner-agent:25252", "host.docker.internal", "mac.local"} {
 		if !hostAllowed(h, nil) {
