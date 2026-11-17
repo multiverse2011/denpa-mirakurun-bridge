@@ -5,6 +5,11 @@ import (
 	"encoding/binary"
 )
 
+// 出典とライセンス: denpa v2.51.0 の packages/arib/src/b24-tables.ts と aribtext.ts
+// (MIT、Copyright (c) 2026 denpa contributors)。表の元は libaribcaption (MIT、
+// Copyright (c) 2022 magicxqq) と JIS X 0213:2004 の対応表 (x0213.org)、EPG 用の数点は
+// ariblib (MIT、Copyright (c) 2013 youzaka)。文面はリポジトリの NOTICE に置いた。
+//
 // aribExtraData は Unicode の符号位置 (4 バイト、上位バイトから) と ARIB の 2 バイト集合の区点の対応。
 // 各項目は [符号位置 (4)][指示バイト][第 1 バイト][第 2 バイト]。
 //
@@ -456,7 +461,11 @@ var aribExtra = func() map[rune]aribCell {
 	}
 	m := make(map[rune]aribCell, len(data)/7)
 	for i := 0; i+7 <= len(data); i += 7 {
-		m[rune(binary.BigEndian.Uint32(data[i:]))] = aribCell{data[i+4], data[i+5], data[i+6]}
+		r := rune(binary.BigEndian.Uint32(data[i:]))
+		if _, ok := m[r]; ok {
+			continue // 先に入っている字を優先する (生成時にも重複は除いている)
+		}
+		m[r] = aribCell{data[i+4], data[i+5], data[i+6]}
 	}
 	return m
 }()

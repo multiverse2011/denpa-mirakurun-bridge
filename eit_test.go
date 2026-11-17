@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestCRC32MPEG(t *testing.T) {
@@ -86,6 +87,89 @@ func TestAribExtraCharacters(t *testing.T) {
 		got, _ := encodeArib(ch)
 		if !bytes.Equal(got, want) {
 			t.Fatalf("%s: % x != % x", ch, got, want)
+		}
+	}
+}
+
+// 2 バイト集合の指示 (0x42・0x39・0x3A・0x3B) を切り替えても、指示と区点を正しく出す
+func TestAribDesignatorSwitching(t *testing.T) {
+	rep := func(designator byte) rune {
+		for r, cell := range aribExtra {
+			if cell.designator == designator {
+				return r
+			}
+		}
+		t.Fatalf("指示 %02x の字がありません", designator)
+		return 0
+	}
+	seq := []rune{'あ', rep(0x39), rep(0x3a), rep(0x3b), 'い', rep(0x3b), rep(0x3a), rep(0x39), 'あ'}
+	var want []byte
+	prev := byte(0x42)
+	for _, r := range seq {
+		var designator, ku, ten byte
+		if code, ok := jis0208[r]; ok {
+			designator, ku, ten = 0x42, byte(code>>8), byte(code)
+		} else {
+			cell := aribExtra[r]
+			designator, ku, ten = cell.designator, cell.ku, cell.ten
+		}
+		if designator != prev {
+			want = append(want, 0x1b, '$', designator)
+			prev = designator
+		}
+		want = append(want, ku, ten)
+	}
+	got, _ := encodeArib(string(seq))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("% x != % x", got, want)
+	}
+}
+
+// 英数・半角カナ・漢字・追加記号の間の切り替え
+func TestAribModeSwitching(t *testing.T) {
+	cell := aribExtra['🈑']
+	want := []byte{
+		0x1b, '(', 'J', 0x89, 'A', // 英数
+		0x8a, 0x1b, '(', 'I', 0x31, // 半角カナ (NSZ して ESC ( I)
+		0x1b, '$', 0x42, 0x24, 0x22, // 漢字 (ESC $ B)
+		0x1b, '$', cell.designator, cell.ku, cell.ten, // 追加記号
+		0x1b, '(', 'J', 0x89, 'A', // 英数に戻る
+	}
+	got, _ := encodeArib("Aｱあ🈑A")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("% x != % x", got, want)
+	}
+}
+
+// splitAribString は CRLF・サロゲートペア・制御文字の途中で切らない
+func TestSplitAribStringBoundaries(t *testing.T) {
+	cases := []string{
+		"a\r\nb",
+		"あ\r\nい",
+		"漢\r\n字",
+		"𠮷\r\nあ",
+		"🈑\r\n𠮷",
+		"A\tB\r\nC",
+		strings.Repeat("あ", 200),
+		"A\x00B\r\nC\x1bD",
+	}
+	for _, s := range cases {
+		enc, _ := encodeArib(s)
+		for limit := 0; limit <= len(enc)+2; limit++ {
+			head, tail := splitAribString(s, limit)
+			if head+tail != s {
+				t.Fatalf("%q (%d): 前半と後半が元に戻りません", s, limit)
+			}
+			headEnc, _ := encodeArib(head)
+			if len(headEnc) > limit {
+				t.Fatalf("%q (%d): 前半が %d バイトあります", s, limit, len(headEnc))
+			}
+			if !utf8.ValidString(head) || !utf8.ValidString(tail) {
+				t.Fatalf("%q (%d): UTF-8 が壊れています", s, limit)
+			}
+			if strings.HasSuffix(head, "\r") && strings.HasPrefix(tail, "\n") {
+				t.Fatalf("%q (%d): CRLF を分けています", s, limit)
+			}
 		}
 	}
 }
