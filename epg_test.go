@@ -199,6 +199,28 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 }
 
+// synthetic でも live・rec・scan はチューナーを使う (合成するのは use=epg だけ)
+func TestSyntheticModeLeavesLiveRecScan(t *testing.T) {
+	e := setup(t, twoGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	open(t, e.base, q("GR", "T27", "9", "live a"))
+	until(t, func() bool { return e.mk.users(0) == 1 })
+	open(t, e.base, q("GR", "T21", "10", "rec 1"))
+	until(t, func() bool { return e.mk.users(1) == 1 })
+	open(t, e.base, q("GR", "T27", "3", "scan T27"))
+	until(t, func() bool { return e.mk.users(0) == 2 })
+}
+
+// 局の情報が引けなければ、番組表も従来のストリーム中継に落ちる
+func TestSyntheticEPGFallsBackWithoutServices(t *testing.T) {
+	e := setup(t, oneGR, []MirakurunChannel{{Type: "GR", Channel: "27"}}, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	o := open(t, e.base, q("GR", "T27", "3", "epg T27"))
+	if o.status != 200 {
+		t.Fatal(o.status)
+	}
+	until(t, func() bool { return e.mk.users(0) == 1 })
+	o.cancel()
+}
+
 // /api/programs が読めなければ、従来のストリーム中継に落ちる
 func TestSyntheticEPGFallback(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })

@@ -34,7 +34,7 @@ func TestAribText(t *testing.T) {
 		{"A", []byte{0x1b, '(', 'J', 0x89, 'A'}},
 		{"あ", []byte{0x24, 0x22}},
 		{"Aあ", []byte{0x1b, '(', 'J', 0x89, 'A', 0x1b, '$', 'B', 0x8a, 0x24, 0x22}},
-		{"ｱ", []byte{0x1b, '(', 'I', 0xb1}},
+		{"ｱ", []byte{0x1b, '(', 'I', 0x31}}, // ESC ( I の後は 0x21〜0x5F (0xA1 ではない)
 	} {
 		got, _ := encodeArib(c.in)
 		if !bytes.Equal(got, c.want) {
@@ -73,6 +73,58 @@ func TestExtendedEventSplitting(t *testing.T) {
 	// 2 本目からは見出しが空 (直前の項目の続き)
 	if d := desc[1]; d[7] != 0 {
 		t.Fatalf("継続の見出し: %d", d[7])
+	}
+}
+
+// extendedItems は extended_event_descriptor を読み、見出しごとに継続を繋ぎ直す
+// (denpa の ExtendedItems と同じ)
+func extendedItems(t *testing.T, descriptors [][]byte) map[string][]byte {
+	t.Helper()
+	items := map[string][]byte{}
+	last := ""
+	for i, d := range descriptors {
+		if d[0] != 0x4e {
+			t.Fatalf("%d: tag %02x", i, d[0])
+		}
+		if d[1] == 0 || int(d[1]) != len(d)-2 {
+			t.Fatalf("%d: descriptor_length %d (len %d)", i, d[1], len(d))
+		}
+		at, end := 7, 7+int(d[6])
+		for at < end {
+			n := int(d[at])
+			heading := d[at+1 : at+1+n]
+			at += 1 + n
+			m := int(d[at])
+			text := d[at+1 : at+1+m]
+			at += 1 + m
+			if n == 0 {
+				items[last] = append(items[last], text...)
+				continue
+			}
+			last = string(heading)
+			items[last] = append(items[last], text...)
+		}
+	}
+	return items
+}
+
+// 項目が 250 バイトちょうどでも descriptor_length が 0 に化けない
+func TestExtendedEventDescriptorBoundary(t *testing.T) {
+	// 見出し 1 文字 (2 バイト) + 本文 23 文字 (46 バイト) = 1 項目 50 バイト、5 個で 250 バイト
+	headings := []string{"あ", "い", "う", "え", "お"}
+	text := strings.Repeat("か", 23)
+	ext := map[string]string{}
+	for _, h := range headings {
+		ext[h] = text
+	}
+	desc := extendedEventDescriptors(ext)
+	got := extendedItems(t, desc)
+	want, _ := encodeArib(text)
+	for _, h := range headings {
+		heading, _ := encodeArib(h)
+		if !bytes.Equal(got[string(heading)], want) {
+			t.Fatalf("%s: % x != % x", h, got[string(heading)], want)
+		}
 	}
 }
 
@@ -179,6 +231,36 @@ func TestEITScheduleTableIDs(t *testing.T) {
 	// 12:00 より前は過ぎたセグメントなので流さない
 	if present[0x50][0] != nil {
 		t.Fatal("過ぎたセグメントを流しています")
+	}
+}
+
+// 最終セグメントに複数のセクションがあるとき、last_section_number は実際の最後に合わせる
+func TestEITLastSectionNumber(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
+	start := jstMidnight(now) + 31*segmentSpanMS // 最終セグメント (3 日後の 21:00)
+	var programs []epgProgram
+	for i := 0; i < 40; i++ {
+		programs = append(programs, epgProgram{
+			EventID: i, StartAt: start + int64(i)*4*time.Minute.Milliseconds(),
+			Duration: time.Minute.Milliseconds(), Name: strings.Repeat("あ", 100),
+		})
+	}
+	var numbers []byte
+	var last []byte
+	for _, sec := range serviceEITSections(epgService{NetworkID: 4, ServiceID: 101}, programs, now) {
+		if sec[0] == tableSchedule {
+			numbers = append(numbers, sec[6])
+			last = append(last, sec[7])
+		}
+	}
+	maxNumber := slices.Max(numbers)
+	if maxNumber <= 248 {
+		t.Fatalf("最終セグメントのセクションが %d 本しかありません", len(numbers))
+	}
+	for i, l := range last {
+		if l != maxNumber {
+			t.Fatalf("last_section_number %d (section %d、最後は %d)", l, numbers[i], maxNumber)
+		}
 	}
 }
 

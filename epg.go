@@ -92,7 +92,7 @@ func (b *Bridge) epgPrograms(ctx context.Context) ([]epgProgram, error) {
 func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, channel, mkChannel string, mkChannels []MirakurunChannel) bool {
 	services := epgServicesFor(typ, mkChannel, mkChannels)
 	if len(services) == 0 {
-		b.logf("cannot synthesize EPG for %s %s: Mirakurun has no services for the channel", "%s %s の番組表を合成できません: Mirakurun にチャンネルの局がありません", typ, channel)
+		b.logf("cannot synthesize EPG for %s %s: Mirakurun has no services for the channel", "%s %s の番組表を合成できません: Mirakurun にこのチャンネルの局がありません", typ, channel)
 		return false
 	}
 	programs, err := b.epgPrograms(r.Context())

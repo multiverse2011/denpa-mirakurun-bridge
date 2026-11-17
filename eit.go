@@ -130,9 +130,9 @@ func encodeArib(s string) (out []byte, cuts []int) {
 		case r < 0x80:
 			set(modeAlnum)
 			put(byte(r))
-		case r >= 0xff61 && r <= 0xff9f: // 半角カナ
+		case r >= 0xff61 && r <= 0xff9f: // 半角カナ (ESC ( I の後は 0x21〜0x5F)
 			set(modeKana)
-			put(byte(0xa1 + r - 0xff61))
+			put(byte(0x21 + r - 0xff61))
 		default:
 			set(modeKanji)
 			code, ok := jis0208[r]
@@ -234,7 +234,9 @@ func extendedEventDescriptors(extended map[string]string) [][]byte {
 	}
 	for _, it := range items {
 		b := append(sizedText(it.heading), sizedText(it.text)...)
-		if len(cur)+len(b) > 250 {
+		// items は 249 バイトまで。本文は items のほかに descriptor_number・言語・長さ・
+		// 自由記述の長さで 6 バイト増えるので、250 だと descriptor_length (1 バイト) が 0 に回る
+		if len(cur)+len(b) > 249 {
 			flush()
 		}
 		cur = append(cur, b...)
@@ -554,19 +556,24 @@ func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]by
 
 	var out [][]byte
 	for t := 0; t < 2; t++ {
+		// last_section_number はその表で実際に使う最後の番号。最後のセグメント (i=31) は必ず流す
+		lastSection := byte(248)
+		// shortcut: 1 セグメント 8 セクション (section_number の 3 ビット) を超える量は捨てる
+		if n := min(len(packEvents(bySegment[t*segmentsPerTable+segmentsPerTable-1], 0)), 8); n > 1 {
+			lastSection = byte(248 + n - 1)
+		}
 		for i := 0; i < segmentsPerTable; i++ {
 			s := t*segmentsPerTable + i
 			if s < current {
 				continue // 過ぎたセグメントは放送でも流れてこない
 			}
 			blobs := packEvents(bySegment[s], 0)
-			// shortcut: 1 セグメント 8 セクション (section_number の 3 ビット) を超える量は捨てる
 			if len(blobs) > 8 {
 				blobs = blobs[:8]
 			}
 			for j, blob := range blobs {
 				out = append(out, eitSectionBytes(byte(tableSchedule+t), svc.ServiceID, svc.NetworkID, svc.NetworkID,
-					byte(i*8+j), 248, byte(i*8+len(blobs)-1), tableLast, [][]byte{blob}))
+					byte(i*8+j), lastSection, byte(i*8+len(blobs)-1), tableLast, [][]byte{blob}))
 			}
 		}
 	}
