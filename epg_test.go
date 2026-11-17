@@ -409,4 +409,10 @@ func TestSyntheticEPGFallback(t *testing.T) {
 	}
 	until(t, func() bool { return e.mk.users(0) == 1 })
 	o.cancel()
+	e.b.mu.Lock()
+	found := slices.ContainsFunc(e.b.logs, func(l logLine) bool { return strings.Contains(l.Text, "合成して送ります") })
+	e.b.mu.Unlock()
+	if found {
+		t.Fatal("フォールバックしたのに「合成して送ります」のログが出ています")
+	}
 }
