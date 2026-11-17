@@ -316,6 +316,48 @@ func TestHostAndContentType(t *testing.T) {
 	}
 }
 
+// denpa v2.51.0 の probeRaw (scramble.ts) の判定。「見える」以外は visible / invisible / unknown。
+// 404 で error が "not found" 以外のときだけ「置き場が見えない」になる
+func denpaRawProbeVerdict(status int, errorText string) string {
+	switch {
+	case status == 200:
+		return "visible"
+	case status == 404 && errorText != "" && errorText != "not found":
+		return "invisible"
+	}
+	return "unknown"
+}
+
+func TestAgentAPIsAddedInV251(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	post := func(path, body string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", e.base+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return res.StatusCode, out
+	}
+	// 置き場は見ないので「確かめられない」。「見えない (警告になる)」ではない
+	status, body := post("/denpa/raw/probe", `{"path":".denpa/probe-1-abc"}`)
+	text, _ := body["error"].(string)
+	if status != 501 || denpaRawProbeVerdict(status, text) != "unknown" {
+		t.Fatalf("raw/probe: %d %v", status, body)
+	}
+	// カードも持たない
+	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
+	if status != 501 || body["ok"] != false {
+		t.Fatalf("card/confirm: %d %v", status, body)
+	}
+}
+
 func TestHostAllowed(t *testing.T) {
 	for _, h := range []string{"192.168.1.5:25252", "[fd00::5]:25252", "localhost", "tuner-agent:25252", "host.docker.internal", "mac.local"} {
 		if !hostAllowed(h, nil) {

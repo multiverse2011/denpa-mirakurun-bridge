@@ -143,7 +143,7 @@ v2.27.0 以前の denpa は HTTP でしか接続できないため、`AGENT_TLS:
 - **番組表・ロゴ・スキャン**: `epg`・`logo`・`scan` の要求は、優先度 0 以上で使用中のチャンネルに相乗りできます。新たにチューナーを使うのは `KEYLESS_TUNERS` の数までで、BS と CS は合わせて数えます。これらの要求では復号しません (`decode=0`)
 - **ストリームの終了**: Mirakurun 側でストリームが終わったときは、denpa が正常終了と誤認しないよう接続を切断します。正常終了として扱うのは `after` で次の配信に引き継ぐときだけです
 - **途切れの検出**: Mirakurun から 30 秒間データが届かない配信や、denpa が 30 秒間読み出さない配信は切断し、チューナーを解放します。`/denpa/events` は無通信で切断されないよう、30 秒ごとに空のコメント行を送ります
-- **カードと復号**: 復号は Mirakurun の decoder に任せます。`/denpa/card` はカードリーダーがないものとして正常に応答し、`/denpa/decode` は 501 を返します
+- **カードと復号**: 復号は Mirakurun の decoder に任せます。`/denpa/card` はカードリーダーがないものとして正常に応答し、`/denpa/decode` は 501 を返します。v2.51.0 で増えた `/denpa/card/confirm` も 501 です (`/denpa/card` の `readers` が空なので、denpa はふつう問い合わせ先に選びません)。`/denpa/raw/probe` も、ブリッジが元の TS の置き場を読まないため 501 を返します。denpa は 404 で本文が `not found` 以外のときだけ「置き場が見えません」と警告し、501 は「確かめられない」として扱うので、警告にはなりません
 - **チューナー**: `rank` は Mirakurun の `tuners.yml` に書かれた順番です。チューナーは Mirakurun で設定するため、`PUT /denpa/tuners` は 405 を返します。`pin` は Mirakurun のチューナー名です。`/denpa/stream` の `tuner=` による名指しには対応せず、どのチューナーを使うかは Mirakurun が選びます
 
 ## 制限事項
