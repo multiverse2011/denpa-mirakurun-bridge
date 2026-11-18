@@ -355,10 +355,12 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 				users = append(users, map[string]any{"use": "mirakurun " + name, "priority": u.Priority})
 			}
 		}
+		// isAvailable=false は「止めている最中」のことが多い (Mirakurun は止め終わるまで false)。
+		// 無効は異常 (isFault) のときだけにする。止めている最中は rank が無いので選局には使われない
 		// pin は denpa v2.30.0 から必須 (device が無ければ name)。無いと設定画面の一覧のキーが重複して描画が落ちる。
 		// shortcut: tuner=<pin> での名指しは受けず Mirakurun に選ばせる、名指しが要るなら stream で t.Name を見る
 		out = append(out, map[string]any{
-			"index": t.Index, "name": t.Name, "pin": t.Name, "types": t.Types, "disabled": !t.IsAvailable, "rank": rank,
+			"index": t.Index, "name": t.Name, "pin": t.Name, "types": t.Types, "disabled": t.IsFault, "rank": rank,
 			"device": nil, "lnb": nil, "channel": channel, "users": users, "pid": t.Pid, "error": errText,
 		})
 	}

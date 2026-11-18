@@ -24,10 +24,12 @@ type mockUser struct {
 }
 
 type mockDevice struct {
-	name    string
-	types   []string
-	typ, ch string
-	users   []*mockUser
+	name      string
+	types     []string
+	typ, ch   string
+	users     []*mockUser
+	available bool // Mirakurun の isAvailable (止めている最中は false)
+	fault     bool // Mirakurun の isFault
 }
 
 type mockRequest struct {
@@ -70,7 +72,7 @@ func (m *mockMirakurun) programsStats() (calls, peak int) {
 func newMock(tuners [][]string, channels []MirakurunChannel) *mockMirakurun {
 	m := &mockMirakurun{channels: channels}
 	for i, types := range tuners {
-		m.devices = append(m.devices, &mockDevice{name: fmt.Sprintf("T%d", i), types: types})
+		m.devices = append(m.devices, &mockDevice{name: fmt.Sprintf("T%d", i), types: types, available: true})
 	}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
@@ -201,7 +203,7 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 					"streamSetting": map[string]any{"channel": map[string]string{"type": d.typ, "channel": d.ch}}})
 			}
 			out = append(out, map[string]any{"index": i, "name": d.name, "types": d.types, "users": users,
-				"isAvailable": true, "isFault": false})
+				"isAvailable": d.available, "isFault": d.fault})
 		}
 		m.mu.Unlock()
 		send(200, out)

@@ -457,6 +457,32 @@ func TestUnpairRequiresTLS(t *testing.T) {
 	}
 }
 
+// Mirakurun がチューナーを止めている最中 (isAvailable=false, isFault=false) は「無効」にしない。
+// 異常 (isFault) のときだけ無効にする
+func TestStoppingTunerIsNotDisabled(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9)
+	state := func(available, fault bool) map[string]any {
+		e.mk.mu.Lock()
+		e.mk.devices[0].available, e.mk.devices[0].fault = available, fault
+		e.mk.mu.Unlock()
+		return getTuners(t, e.base)[0]
+	}
+
+	if got := state(true, false); got["disabled"] != false || got["rank"] != 0.0 {
+		t.Fatalf("空き: disabled=%v rank=%v", got["disabled"], got["rank"])
+	}
+	// 止めている最中は無効にしない。rank は空きでないので付けない (選局には使われない)
+	if got := state(false, false); got["disabled"] != false || got["rank"] != nil {
+		t.Fatalf("止めている最中: disabled=%v rank=%v", got["disabled"], got["rank"])
+	}
+	if got := state(false, true); got["disabled"] != true {
+		t.Fatalf("異常: disabled=%v", got["disabled"])
+	}
+	if got := state(true, true); got["disabled"] != true {
+		t.Fatalf("異常 (空きと報告): disabled=%v", got["disabled"])
+	}
+}
+
 func TestHostAllowed(t *testing.T) {
 	for _, h := range []string{"192.168.1.5:25252", "[fd00::5]:25252", "localhost", "tuner-agent:25252", "host.docker.internal", "mac.local"} {
 		if !hostAllowed(h, nil) {
