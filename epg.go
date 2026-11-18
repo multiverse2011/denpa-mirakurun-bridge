@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +72,36 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []epgSer
 	return out
 }
 
+// addStoredGroundServices は合成 SDT の地上波の顔ぶれを denpa のスキャン結果に合わせる。
+// 預かったチャンネル (channels.json) の局のうち、Mirakurun の services に無いものを足す。
+// 足す局の種別と名前は預かった値を使い、種別が無い (0) 局は足さない。名前が無い局は空の名前で足す。
+// 見つかったときは、預かったチャンネルの transportStreamId も返す (0 なら呼び側は今の値を使う)
+func addStoredGroundServices(channel string, services []epgService, stored []DenpaChannel) ([]epgService, int) {
+	var self *DenpaChannel
+	for i := range stored {
+		if stored[i].Type == "GR" && stored[i].Channel == channel {
+			self = &stored[i]
+			break
+		}
+	}
+	if self == nil {
+		return services, 0
+	}
+	have := map[int]bool{}
+	for _, s := range services {
+		have[s.ServiceID] = true
+	}
+	out := slices.Clone(services)
+	for _, s := range self.Services {
+		if s.ServiceID == 0 || s.ServiceType == 0 || have[s.ServiceID] {
+			continue
+		}
+		have[s.ServiceID] = true
+		out = append(out, epgService{NetworkID: self.NetworkID, ServiceID: s.ServiceID, Type: s.ServiceType, Name: s.Name})
+	}
+	return out, self.TransportStreamID
+}
+
 // epgPrograms は Mirakurun の番組表を返す。一定の間隔だけ覚えておく
 func (b *Bridge) epgPrograms(ctx context.Context) ([]epgProgram, error) {
 	b.epgMu.Lock()
@@ -129,6 +160,21 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 		return false
 	}
 
+	// 地上波の SDT だけは、denpa が預けたチャンネルの局も載せる (denpa はスキャン結果と顔ぶれを比べる)。
+	// EIT と PAT は Mirakurun の services のまま
+	sdtServices := services
+	tsid := services[0].NetworkID // Mirakurun は TSID を返さないので、ネットワーク ID で代用する
+	if typ == "GR" {
+		b.mu.Lock()
+		stored := slices.Clone(b.parsed)
+		b.mu.Unlock()
+		var storedTSID int
+		sdtServices, storedTSID = addStoredGroundServices(channel, services, stored)
+		if storedTSID != 0 {
+			tsid = storedTSID
+		}
+	}
+
 	// 同じ内容を何度か流す。denpa は番組が増えたときに「揃った」かを見るので、
 	// 1 回だけだと空のセクションが最後に届いたときに判定されないことがある
 	ts := newTSWriter()
@@ -146,9 +192,8 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 			}
 		}
 		var buf bytes.Buffer
-		tsid := services[0].NetworkID // Mirakurun は TSID を返さないので、ネットワーク ID で代用する
 		buf.Write(ts.section(pidPAT, patSection(tsid, services)))
-		buf.Write(ts.section(pidSDT, sdtSection(tsid, services[0].NetworkID, services)))
+		buf.Write(ts.section(pidSDT, sdtSection(tsid, services[0].NetworkID, sdtServices)))
 		for _, svc := range services {
 			for _, section := range serviceEITSections(svc, byService[[2]int{svc.NetworkID, svc.ServiceID}], now) {
 				buf.Write(ts.section(pidEIT, section))
