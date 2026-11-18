@@ -355,8 +355,14 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 				users = append(users, map[string]any{"use": "mirakurun " + name, "priority": u.Priority})
 			}
 		}
+		// 止めている最中は disabled にせず、空きに数えられないよう仮の利用者を 1 件入れる。
+		// denpa のロゴの空き数 (logo.ts の countFree) は users が空かで数える。Mirakurun がまだ
+		// 利用者を返している間 (止める途中) は、そちらをそのまま使う
+		if !t.IsAvailable && !t.IsFault && len(t.Users) == 0 {
+			users = append(users, map[string]any{"use": b.msg.t("mirakurun stopping", "mirakurun 停止中"), "priority": -1})
+		}
 		// isAvailable=false は「止めている最中」のことが多い (Mirakurun は止め終わるまで false)。
-		// 無効は異常 (isFault) のときだけにする。止めている最中は rank が無いので選局には使われない
+		// 無効は異常 (isFault) のときだけにする。止めている最中は rank を返さない
 		// pin は denpa v2.30.0 から必須 (device が無ければ name)。無いと設定画面の一覧のキーが重複して描画が落ちる。
 		// shortcut: tuner=<pin> での名指しは受けず Mirakurun に選ばせる、名指しが要るなら stream で t.Name を見る
 		out = append(out, map[string]any{
