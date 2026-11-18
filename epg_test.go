@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -199,8 +198,8 @@ func TestSyntheticSDTAddsStoredGroundServices(t *testing.T) {
 	if tsid != 24632 {
 		t.Fatalf("SDT の transportStreamId: %d", tsid)
 	}
-	wantName, _ := encodeArib("ワンセグ2")
-	if s, ok := svcs[25017]; !ok || s.typ != 192 || !bytes.Equal(s.name, wantName) {
+	// 足す局の名前は空にする (古い channels.json の名前で denpa の局名を半角に戻さない)
+	if s, ok := svcs[25017]; !ok || s.typ != 192 || len(s.name) != 0 {
 		t.Fatalf("25017: %+v", s)
 	}
 	// 名前が空でも、種別があれば足す
@@ -214,11 +213,40 @@ func TestSyntheticSDTAddsStoredGroundServices(t *testing.T) {
 	if _, ok := svcs[1024]; !ok {
 		t.Fatal("Mirakurun の局が SDT にありません")
 	}
-	// 足した局は EIT を持たない
+	// 足した局は EIT を持たず、EIT の TSID は Mirakurun の networkId のまま (PAT/SDT とは別)
 	for _, sec := range tsSections(t, body, pidEIT) {
 		if id := int(sec[3])<<8 | int(sec[4]); id == 25017 || id == 25019 {
 			t.Fatalf("足した局 %d の EIT があります", id)
 		}
+		if eitTSID := int(sec[8])<<8 | int(sec[9]); eitTSID != 32736 {
+			t.Fatalf("EIT の transportStreamId: %d", eitTSID)
+		}
+	}
+}
+
+// 新しい項目 (transportStreamId・serviceType) の無い古い控えでは、従来どおり
+// networkId を TSID にし、局は足さない (denpa で地上波をスキャンし直すと入る)
+func TestSyntheticSDTOldStoredWithoutNewFields(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	putDenpaChannels(t, e.base, `{"scanned":["GR"],"channels":[{
+		"type":"GR","channel":"T27","networkId":32736,
+		"services":[{"serviceId":1024},{"serviceId":25017}]}]}`)
+	now := time.Now()
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
+	e.mk.mu.Unlock()
+
+	_, body := getEPG(t, e.base, q("GR", "T27", "3", "epg T27"))
+	svcs, tsid := sdtServicesOf(t, body)
+	if tsid != 32736 {
+		t.Fatalf("SDT の transportStreamId: %d", tsid)
+	}
+	if len(svcs) != 1 {
+		t.Fatalf("SDT の局: %v", svcs)
+	}
+	if s, ok := svcs[1024]; !ok || s.typ != 1 {
+		t.Fatalf("1024: %+v", s)
 	}
 }
 

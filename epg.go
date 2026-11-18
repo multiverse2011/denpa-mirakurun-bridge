@@ -74,7 +74,9 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []epgSer
 
 // addStoredGroundServices は合成 SDT の地上波の顔ぶれを denpa のスキャン結果に合わせる。
 // 預かったチャンネル (channels.json) の局のうち、Mirakurun の services に無いものを足す。
-// 足す局の種別と名前は預かった値を使い、種別が無い (0) 局は足さない。名前が無い局は空の名前で足す。
+// 足す局の種別は預かった値を使い、種別が無い (0) 局は足さない。名前は空にする
+// (denpa の widenServices が古い channels.json の名前で DB の局名を半角に戻すのを避ける。
+// compareGround は名前を見ない)。
 // 見つかったときは、預かったチャンネルの transportStreamId も返す (0 なら呼び側は今の値を使う)
 func addStoredGroundServices(channel string, services []epgService, stored []DenpaChannel) ([]epgService, int) {
 	var self *DenpaChannel
@@ -97,7 +99,7 @@ func addStoredGroundServices(channel string, services []epgService, stored []Den
 			continue
 		}
 		have[s.ServiceID] = true
-		out = append(out, epgService{NetworkID: self.NetworkID, ServiceID: s.ServiceID, Type: s.ServiceType, Name: s.Name})
+		out = append(out, epgService{NetworkID: self.NetworkID, ServiceID: s.ServiceID, Type: s.ServiceType})
 	}
 	return out, self.TransportStreamID
 }
@@ -161,7 +163,10 @@ func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, chann
 	}
 
 	// 地上波の SDT だけは、denpa が預けたチャンネルの局も載せる (denpa はスキャン結果と顔ぶれを比べる)。
-	// EIT と PAT は Mirakurun の services のまま
+	// EIT の services と PAT の services は Mirakurun のまま (PAT の TSID は SDT と揃える)。
+	// EIT は serviceEITSections が svc.NetworkID を transport_stream_id に使うので、
+	// networkId と TSID が違う実機では TS 全体で 2 種類になり得る (実機の地上波では同じ)。
+	// denpa の EpgReader は EIT の TSID を見ず serviceId で読むため、今は実害が無い
 	sdtServices := services
 	tsid := services[0].NetworkID // Mirakurun は TSID を返さないので、ネットワーク ID で代用する
 	if typ == "GR" {
