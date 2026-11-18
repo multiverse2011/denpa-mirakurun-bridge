@@ -132,6 +132,167 @@ func TestSyntheticEPGLogsWhenStreaming(t *testing.T) {
 	}
 }
 
+// denpa のスキャン結果 (channels.json) を預ける
+func putDenpaChannels(t *testing.T, base, body string) {
+	t.Helper()
+	req, _ := http.NewRequest("PUT", base+"/denpa/channels", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("PUT /denpa/channels: %d", res.StatusCode)
+	}
+}
+
+type sdtServiceInfo struct {
+	typ  int
+	name []byte
+}
+
+// sdtServicesOf は合成 TS の SDT から局 (service_id → 種別・名前) と transportStreamId を取る
+func sdtServicesOf(t *testing.T, data []byte) (map[int]sdtServiceInfo, int) {
+	t.Helper()
+	out := map[int]sdtServiceInfo{}
+	tsid := -1
+	for _, sec := range tsSections(t, data, pidSDT) {
+		if sec[0] != tableSDT {
+			continue
+		}
+		tsid = int(sec[3])<<8 | int(sec[4])
+		for at := 11; at+5 <= len(sec)-4; {
+			id := int(sec[at])<<8 | int(sec[at+1])
+			n := int(sec[at+3]&0x0f)<<8 | int(sec[at+4])
+			desc := sec[at+5 : at+5+n]
+			if len(desc) >= 5 && desc[0] == 0x48 {
+				nameLen := int(desc[4])
+				out[id] = sdtServiceInfo{typ: int(desc[2]), name: desc[5 : 5+nameLen]}
+			}
+			at += 5 + n
+		}
+	}
+	return out, tsid
+}
+
+// 地上波の合成 SDT は、預かったチャンネルの局のうち Mirakurun に無いものも載せる
+func TestSyntheticSDTAddsStoredGroundServices(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	putDenpaChannels(t, e.base, `{"scanned":["GR"],"channels":[{
+		"type":"GR","channel":"T27","networkId":32736,"transportStreamId":24632,
+		"services":[
+			{"serviceId":1024,"serviceType":1,"name":"サービスA"},
+			{"serviceId":25017,"serviceType":192,"name":"ワンセグ2"},
+			{"serviceId":25018,"serviceType":0,"name":"種別なし"},
+			{"serviceId":25019,"serviceType":192,"name":""}
+		]}]}`)
+	now := time.Now()
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
+	e.mk.mu.Unlock()
+
+	_, body := getEPG(t, e.base, q("GR", "T27", "3", "epg T27"))
+	svcs, tsid := sdtServicesOf(t, body)
+	if tsid != 24632 {
+		t.Fatalf("SDT の transportStreamId: %d", tsid)
+	}
+	// 足す局の名前は空にする (古い channels.json の名前で denpa の局名を半角に戻さない)
+	if s, ok := svcs[25017]; !ok || s.typ != 192 || len(s.name) != 0 {
+		t.Fatalf("25017: %+v", s)
+	}
+	// 名前が空でも、種別があれば足す
+	if s, ok := svcs[25019]; !ok || s.typ != 192 || len(s.name) != 0 {
+		t.Fatalf("25019: %+v", s)
+	}
+	// 種別が無い局は足さない
+	if _, ok := svcs[25018]; ok {
+		t.Fatal("種別の無い局を足しています")
+	}
+	if _, ok := svcs[1024]; !ok {
+		t.Fatal("Mirakurun の局が SDT にありません")
+	}
+	// 足した局は EIT を持たず、EIT の TSID は Mirakurun の networkId のまま (PAT/SDT とは別)
+	for _, sec := range tsSections(t, body, pidEIT) {
+		if id := int(sec[3])<<8 | int(sec[4]); id == 25017 || id == 25019 {
+			t.Fatalf("足した局 %d の EIT があります", id)
+		}
+		if eitTSID := int(sec[8])<<8 | int(sec[9]); eitTSID != 32736 {
+			t.Fatalf("EIT の transportStreamId: %d", eitTSID)
+		}
+	}
+}
+
+// 新しい項目 (transportStreamId・serviceType) の無い古い控えでは、従来どおり
+// networkId を TSID にし、局は足さない (denpa で地上波をスキャンし直すと入る)
+func TestSyntheticSDTOldStoredWithoutNewFields(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	putDenpaChannels(t, e.base, `{"scanned":["GR"],"channels":[{
+		"type":"GR","channel":"T27","networkId":32736,
+		"services":[{"serviceId":1024},{"serviceId":25017}]}]}`)
+	now := time.Now()
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
+	e.mk.mu.Unlock()
+
+	_, body := getEPG(t, e.base, q("GR", "T27", "3", "epg T27"))
+	svcs, tsid := sdtServicesOf(t, body)
+	if tsid != 32736 {
+		t.Fatalf("SDT の transportStreamId: %d", tsid)
+	}
+	if len(svcs) != 1 {
+		t.Fatalf("SDT の局: %v", svcs)
+	}
+	if s, ok := svcs[1024]; !ok || s.typ != 1 {
+		t.Fatalf("1024: %+v", s)
+	}
+}
+
+// 衛星の SDT は預かったチャンネルで変えない
+func TestSyntheticSDTLeavesSatellite(t *testing.T) {
+	e := setup(t, [][]string{{"BS"}}, bsChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	putDenpaChannels(t, e.base, `{"scanned":["BS"],"channels":[{
+		"type":"BS","channel":"BS15_0","networkId":4,"transportStreamId":16625,
+		"services":[{"serviceId":101,"serviceType":1,"name":"BS一"},{"serviceId":999,"serviceType":1,"name":"足さない局"}]}]}`)
+	now := time.Now()
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 101, NetworkID: 4,
+		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
+	e.mk.mu.Unlock()
+
+	_, body := getEPG(t, e.base, q("BS", "BS15_0", "3", "epg BS15_0"))
+	svcs, _ := sdtServicesOf(t, body)
+	if _, ok := svcs[999]; ok {
+		t.Fatal("衛星に預かった局を足しています")
+	}
+	for _, id := range []int{101, 103} {
+		if _, ok := svcs[id]; !ok {
+			t.Fatalf("Mirakurun の局 %d が SDT にありません", id)
+		}
+	}
+}
+
+// 預かったチャンネルが無ければ従来どおり (Mirakurun の services だけ)
+func TestSyntheticSDTWithoutStoredChannels(t *testing.T) {
+	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	now := time.Now()
+	e.mk.mu.Lock()
+	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
+	e.mk.mu.Unlock()
+
+	_, body := getEPG(t, e.base, q("GR", "T27", "3", "epg T27"))
+	svcs, _ := sdtServicesOf(t, body)
+	if len(svcs) != 1 {
+		t.Fatalf("SDT の局: %v", svcs)
+	}
+	if s, ok := svcs[1024]; !ok || s.typ != 1 {
+		t.Fatalf("1024: %+v", s)
+	}
+}
+
 func TestSyntheticEPG(t *testing.T) {
 	channels := []MirakurunChannel{
 		{Type: "GR", Channel: "27", Services: []MirakurunService{{ServiceID: 1024, NetworkID: 32736, Type: 1, Name: "サービスA"}}},

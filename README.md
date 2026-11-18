@@ -115,7 +115,7 @@ Mirakurun のデバイスやカードリーダー、`network_mode: host` など�
 | `PRIORITY_MAP` | なし | denpa の優先度を Mirakurun の優先度に変換する対応表です (例: `10:2,9:1`)。表にない値はそのまま渡し、負の値は 0 にします |
 | `KEYLESS_TUNERS` | `1` | 番組表・ロゴの取得やチャンネルスキャンで、新たに使ってよいチューナーの数です |
 | `DECODE_KEYLESS` | `0` | `1` にすると、番組表・ロゴ・スキャンの取得でも復号します (`decode=1`)。Sakurako など上流が `decode` の異なる要求を共有しないとき、ライブと同じ復号済みストリームを共有できます。カードやデコーダが不調だと番組表の取得も巻き添えになります |
-| `EPG_MODE` | `broadcast` | **実験的機能**です。`synthetic` にすると、`use=epg` を Mirakurun の番組表 (`/api/programs`) から合成して返し、チューナーを使いません。合成できないときは従来のストリーム中継に落ちます。live・rec・scan は変わりません (切り替えは再起動)。短い説明に収まらない説明の後半は extended の「番組内容」に入れますが、denpa の全体検索 (`/search`) は extended を見ないため、後半はそこでは当たりません |
+| `EPG_MODE` | `broadcast` | **実験的機能**です。`synthetic` にすると、`use=epg` を Mirakurun の番組表 (`/api/programs`) から合成して返し、チューナーを使いません。合成できないときは従来のストリーム中継に落ちます。live・rec・scan は変わりません (切り替えは再起動)。短い説明に収まらない説明の後半は extended の「番組内容」に入れますが、denpa の全体検索 (`/search`) は extended を見ないため、後半はそこでは当たりません。地上波の SDT には、denpa が預けたチャンネルの局のうち Mirakurun に無いものを足します。Mirakurun にだけある局は残るため、局が減ったときはスキャン結果との顔ぶれの違いが出ます (EIT は Mirakurun のまま)。`transportStreamId` や `serviceType` の無い古い `channels.json` ではこの補正は効かず、denpa で地上波をスキャンし直すと入ります |
 | `CHANNELS_FILE` | `data/channels.json` | denpa から受け取ったチャンネル一覧の保存先です。Docker イメージでは `/config/channels.json` です |
 | `AGENT_TLS` | `1` | `0` にすると TLS を使わず HTTP で待ち受けます (v2.27.0 以前の denpa 向け) |
 | `AGENT_PAIR_TOKEN` | なし | denpa と組むための合言葉です。未指定なら自動で生成し、`CHANNELS_FILE` と同じ場所の `tls/pair-token` に保存します |

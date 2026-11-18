@@ -7,11 +7,14 @@ import (
 
 // DenpaChannel は denpa が PUT /denpa/channels で預ける局のうち、対応付けに使う項目。
 type DenpaChannel struct {
-	Type      string `json:"type"`
-	Channel   string `json:"channel"`
-	NetworkID int    `json:"networkId"`
-	Services  []struct {
-		ServiceID int `json:"serviceId"`
+	Type              string `json:"type"`
+	Channel           string `json:"channel"`
+	NetworkID         int    `json:"networkId"`
+	TransportStreamID int    `json:"transportStreamId"`
+	Services          []struct {
+		ServiceID   int    `json:"serviceId"`
+		ServiceType int    `json:"serviceType"`
+		Name        string `json:"name"`
 	} `json:"services"`
 }
 
