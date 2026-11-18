@@ -329,6 +329,7 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 
 	out := []map[string]any{}
 	for _, t := range list {
+		stopping := !t.IsAvailable && !t.IsFault
 		var channel, rank, errText any
 		for _, u := range t.Users {
 			if c := u.StreamSetting; c != nil && c.Channel != nil {
@@ -344,6 +345,12 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 			errText = b.msg.t("Mirakurun reports a fault on this tuner", "Mirakurun がこのチューナーの異常を報告しています")
 		}
 		users := []map[string]any{}
+		// 止めている最中は、空きに数えられないよう仮の利用者を先頭に 1 件入れる。
+		// denpa のロゴの空き数 (logo.ts の countFree) は users が空かで数える。
+		// Mirakurun がまだ利用者を返している間も、その後ろにそのまま並べる
+		if stopping {
+			users = append(users, map[string]any{"use": b.msg.t("mirakurun stopping", "mirakurun 停止中"), "priority": -1})
+		}
 		for _, u := range t.Users {
 			if a, ok := mine[u.ID]; ok {
 				users = append(users, map[string]any{"use": a.use, "priority": a.priority})
@@ -355,11 +362,10 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 				users = append(users, map[string]any{"use": "mirakurun " + name, "priority": u.Priority})
 			}
 		}
-		// 止めている最中は disabled にせず、空きに数えられないよう仮の利用者を 1 件入れる。
-		// denpa のロゴの空き数 (logo.ts の countFree) は users が空かで数える。Mirakurun がまだ
-		// 利用者を返している間 (止める途中) は、そちらをそのまま使う
-		if !t.IsAvailable && !t.IsFault && len(t.Users) == 0 {
-			users = append(users, map[string]any{"use": b.msg.t("mirakurun stopping", "mirakurun 停止中"), "priority": -1})
+		// 止めている最中は channel を返さない。denpa の保留表示や相乗りの判定は channel で
+		// 一致を見るので、止める途中のチューナーに載せない
+		if stopping {
+			channel = nil
 		}
 		// isAvailable=false は「止めている最中」のことが多い (Mirakurun は止め終わるまで false)。
 		// 無効は異常 (isFault) のときだけにする。止めている最中は rank を返さない

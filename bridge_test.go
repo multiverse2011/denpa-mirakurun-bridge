@@ -471,10 +471,10 @@ func TestStoppingTunerIsNotDisabled(t *testing.T) {
 	if got := state(true, false); got["disabled"] != false || got["rank"] != 0.0 {
 		t.Fatalf("空き: disabled=%v rank=%v", got["disabled"], got["rank"])
 	}
-	// 止めている最中は無効にせず、空きに数えられないよう仮の利用者を 1 件入れる
+	// 止めている最中は無効にせず、channel を返さず、空きに数えられないよう仮の利用者を 1 件入れる
 	stopping := state(false, false)
-	if stopping["disabled"] != false || stopping["rank"] != nil {
-		t.Fatalf("止めている最中: disabled=%v rank=%v", stopping["disabled"], stopping["rank"])
+	if stopping["disabled"] != false || stopping["rank"] != nil || stopping["channel"] != nil {
+		t.Fatalf("止めている最中: disabled=%v rank=%v channel=%v", stopping["disabled"], stopping["rank"], stopping["channel"])
 	}
 	users, _ := stopping["users"].([]any)
 	if len(users) != 1 {
@@ -494,17 +494,38 @@ func TestStoppingTunerIsNotDisabled(t *testing.T) {
 		t.Fatalf("異常の users: %v", users)
 	}
 
-	// Mirakurun が利用者を返している間は、仮の利用者を足さない
+	// Mirakurun がまだ利用者を返している止める途中でも、channel は返さず、
+	// 仮の利用者を先頭にして実利用者をその後ろに並べる
 	e.mk.mu.Lock()
 	e.mk.devices[0].available, e.mk.devices[0].fault = false, false
 	e.mk.devices[0].users = append(e.mk.devices[0].users, &mockUser{id: "stopping", priority: -1, agent: "Mirakurun:getServices()"})
 	e.mk.mu.Unlock()
-	users, _ = getTuners(t, e.base)[0]["users"].([]any)
-	if len(users) != 1 {
+	got := getTuners(t, e.base)[0]
+	if got["channel"] != nil {
+		t.Fatalf("利用者があるときの channel: %v", got["channel"])
+	}
+	users, _ = got["users"].([]any)
+	if len(users) != 2 {
 		t.Fatalf("利用者があるときの users: %v", users)
 	}
-	if use, _ := users[0].(map[string]any)["use"].(string); use != "mirakurun Mirakurun:getServices()" {
-		t.Fatalf("利用者があるときの use: %q", use)
+	if u, _ := users[0].(map[string]any); u["use"] != "mirakurun 停止中" || u["priority"] != -1.0 {
+		t.Fatalf("仮の利用者が先頭にありません: %v", users[0])
+	}
+	if use, _ := users[1].(map[string]any)["use"].(string); use != "mirakurun Mirakurun:getServices()" {
+		t.Fatalf("実利用者が後ろにありません: %q", use)
+	}
+
+	// MESSAGE_LANG=en では "mirakurun stopping"
+	en := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.msg = messages{en: true} })
+	en.mk.mu.Lock()
+	en.mk.devices[0].available, en.mk.devices[0].fault = false, false
+	en.mk.mu.Unlock()
+	enUsers, _ := getTuners(t, en.base)[0]["users"].([]any)
+	if len(enUsers) != 1 {
+		t.Fatalf("EN の users: %v", enUsers)
+	}
+	if u, _ := enUsers[0].(map[string]any); u["use"] != "mirakurun stopping" || u["priority"] != -1.0 {
+		t.Fatalf("EN の仮の利用者: %v", u)
 	}
 }
 
