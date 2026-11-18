@@ -329,6 +329,7 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 
 	out := []map[string]any{}
 	for _, t := range list {
+		stopping := !t.IsAvailable && !t.IsFault
 		var channel, rank, errText any
 		for _, u := range t.Users {
 			if c := u.StreamSetting; c != nil && c.Channel != nil {
@@ -344,6 +345,12 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 			errText = b.msg.t("Mirakurun reports a fault on this tuner", "Mirakurun がこのチューナーの異常を報告しています")
 		}
 		users := []map[string]any{}
+		// 止めている最中は、空きに数えられないよう仮の利用者を先頭に 1 件入れる。
+		// denpa のロゴの空き数 (logo.ts の countFree) は users が空かで数える。
+		// Mirakurun がまだ利用者を返している間も、その後ろにそのまま並べる
+		if stopping {
+			users = append(users, map[string]any{"use": b.msg.t("mirakurun stopping", "mirakurun 停止中"), "priority": -1})
+		}
 		for _, u := range t.Users {
 			if a, ok := mine[u.ID]; ok {
 				users = append(users, map[string]any{"use": a.use, "priority": a.priority})
@@ -355,10 +362,17 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 				users = append(users, map[string]any{"use": "mirakurun " + name, "priority": u.Priority})
 			}
 		}
+		// 止めている最中は channel を返さない。denpa の保留表示や相乗りの判定は channel で
+		// 一致を見るので、止める途中のチューナーに載せない
+		if stopping {
+			channel = nil
+		}
+		// isAvailable=false は「止めている最中」のことが多い (Mirakurun は止め終わるまで false)。
+		// 無効は異常 (isFault) のときだけにする。止めている最中は rank を返さない
 		// pin は denpa v2.30.0 から必須 (device が無ければ name)。無いと設定画面の一覧のキーが重複して描画が落ちる。
 		// shortcut: tuner=<pin> での名指しは受けず Mirakurun に選ばせる、名指しが要るなら stream で t.Name を見る
 		out = append(out, map[string]any{
-			"index": t.Index, "name": t.Name, "pin": t.Name, "types": t.Types, "disabled": !t.IsAvailable, "rank": rank,
+			"index": t.Index, "name": t.Name, "pin": t.Name, "types": t.Types, "disabled": t.IsFault, "rank": rank,
 			"device": nil, "lnb": nil, "channel": channel, "users": users, "pid": t.Pid, "error": errText,
 		})
 	}
