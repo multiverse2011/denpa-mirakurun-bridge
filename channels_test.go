@@ -34,6 +34,7 @@ func TestGRMatchStored(t *testing.T) {
 	storedT16 := storedChannel(t, "GR", "T16", 32736, 1024)
 	storedT20 := storedChannel(t, "GR", "T20", 32736, 1024)
 	storedT27 := storedChannel(t, "GR", "T27", 32736, 1024)
+	storedC13 := storedChannel(t, "GR", "C13", 32736, 1024)
 
 	for _, c := range []struct {
 		name    string
@@ -49,7 +50,7 @@ func TestGRMatchStored(t *testing.T) {
 		// 番号が一致するチャンネルが別の局なら断る
 		{"番号は合うが別の局", "T16", []DenpaChannel{storedT16}, changed, ""},
 		// 数字でない名前でも、預かった局で引く
-		{"数字でない名前", "C13", []DenpaChannel{storedChannel(t, "GR", "C13", 32736, 1024)},
+		{"数字でない名前", "C13", []DenpaChannel{storedC13},
 			[]MirakurunChannel{{Type: "GR", Channel: "MX", Services: services(32736, 1024)}}, "MX"},
 		// 数字でない名前で、預かった局が無ければ今までどおり (完全一致)
 		{"数字でない名前・預かり無し", "MX", nil,
@@ -57,6 +58,14 @@ func TestGRMatchStored(t *testing.T) {
 		// services が空の番号一致は、今までどおり番号で選ぶ
 		{"services が空", "T27", []DenpaChannel{storedT27},
 			[]MirakurunChannel{{Type: "GR", Channel: "27"}, {Type: "GR", Channel: "20", Services: services(32736, 1024)}}, "27"},
+		// 名前が完全一致し services が空なら、同じ局の別名 (MX) より指定どおり
+		{"exact の services が空", "C13", []DenpaChannel{storedC13},
+			[]MirakurunChannel{{Type: "GR", Channel: "C13"}, {Type: "GR", Channel: "MX", Services: services(32736, 1024)}}, "C13"},
+		// 数字の名前でも、Mirakurun に同じ名前で services 空があれば exact
+		{"exact の services が空 (T27)", "T27", []DenpaChannel{storedT27},
+			[]MirakurunChannel{{Type: "GR", Channel: "T27"}}, "T27"},
+		// 同じ局が複数あり、番号一致が無ければ設定順の先頭
+		{"同じ局が複数", "T27", []DenpaChannel{storedT27}, both, "16"},
 		// 預かった局が無ければ番号で選ぶ
 		{"預かり無し", "T20", nil, changed, "20"},
 		// 預かった局で同じ局が無ければ、別の局を選ばない
@@ -69,32 +78,37 @@ func TestGRMatchStored(t *testing.T) {
 }
 
 func TestGRToDenpaPrefersStored(t *testing.T) {
-	mk := []MirakurunChannel{{Type: "GR", Channel: "20", Services: services(32736, 1024)}}
+	mk20same := []MirakurunChannel{{Type: "GR", Channel: "20", Services: services(32736, 1024)}}
+	mkMXsame := []MirakurunChannel{{Type: "GR", Channel: "MX", Services: services(32736, 1024)}}
+	mk16same := []MirakurunChannel{{Type: "GR", Channel: "16", Services: services(32736, 1024)}}
 	for _, c := range []struct {
 		name   string
 		mkName string
 		stored []DenpaChannel
+		mk     []MirakurunChannel
 		want   string
 	}{
+		// 実機相当: 16 のストリームは T16
+		{"実機相当", "16", []DenpaChannel{storedChannel(t, "GR", "T16", 32736, 1024)}, mk16same, "T16"},
 		// 同じ局が複数の denpa チャンネルにあるときは番号が一致するもの
 		{"番号が一致", "20", []DenpaChannel{
 			storedChannel(t, "GR", "T16", 32736, 1024),
 			storedChannel(t, "GR", "T20", 32736, 1024),
-		}, "T20"},
+		}, mk20same, "T20"},
 		// 数字でない Mirakurun 名でも、同じ局の denpa 名を返す
-		{"数字でない名前", "MX", []DenpaChannel{storedChannel(t, "GR", "C13", 32736, 1024)}, "C13"},
+		{"数字でない名前", "MX", []DenpaChannel{storedChannel(t, "GR", "C13", 32736, 1024)}, mkMXsame, "C13"},
 		// 番号は一致しないが、同じ局なら denpa 名を返す
-		{"番号が違う denpa 名", "20", []DenpaChannel{storedChannel(t, "GR", "C13", 32736, 1024)}, "C13"},
+		{"番号が違う denpa 名", "20", []DenpaChannel{storedChannel(t, "GR", "C13", 32736, 1024)}, mk20same, "C13"},
+		// 対象のチャンネルの services が空なら従来どおり (番号)
+		{"対象の services が空", "20", []DenpaChannel{storedChannel(t, "GR", "T16", 32736, 1024)},
+			[]MirakurunChannel{{Type: "GR", Channel: "20"}}, "T20"},
+		// 預かった局の services が空なら従来どおり (番号)
+		{"預かった局の services が空", "16", []DenpaChannel{storedChannel(t, "GR", "T16", 0)}, mk16same, "T16"},
 		// 預かった局に同じ局が無ければ今までどおり
-		{"一致しない", "20", []DenpaChannel{storedChannel(t, "GR", "C13", 1111, 999)}, "T20"},
-		{"預かり無し", "20", nil, "T20"},
+		{"一致しない", "20", []DenpaChannel{storedChannel(t, "GR", "C13", 1111, 999)}, mk20same, "T20"},
+		{"預かり無し", "20", nil, mk20same, "T20"},
 	} {
-		mkName := c.mkName
-		list := mk
-		if c.mkName == "MX" {
-			list = []MirakurunChannel{{Type: "GR", Channel: "MX", Services: services(32736, 1024)}}
-		}
-		if got := toDenpa("GR", mkName, c.stored, list); got != c.want {
+		if got := toDenpa("GR", c.mkName, c.stored, c.mk); got != c.want {
 			t.Errorf("%s: %q != %q", c.name, got, c.want)
 		}
 	}

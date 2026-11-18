@@ -76,10 +76,11 @@ func grByName(name string, ofType []MirakurunChannel, exact func() string) strin
 }
 
 // toMirakurun は denpa のチャンネル名を Mirakurun のチャンネル名に引く。無ければ ""。
-// 地上波は、預かった局と同じ services (networkId と serviceId) のチャンネルを選ぶ。
-// 頼まれた番号の中継局が別の局になっていれば断り、番号が一致するチャンネルが無ければ
-// 同じ局の別の中継局を使う。預かった局が無い (または services が空) ときと、
-// 番号が一致する Mirakurun のチャンネルの services が空のときは、従来どおり番号で引く。
+// 地上波は、預かった局と services (networkId と serviceId) のいずれかが一致するチャンネルを選ぶ。
+// 頼まれた番号 (T27→27) または名前の完全一致を「指定どおり」とし、指定どおりの中継局が
+// 別の局になっていれば断る。指定どおりのチャンネルの services が空なら、そのチャンネルを選ぶ。
+// 指定どおりが無ければ同じ局の別の中継局 (複数なら Mirakurun の並び順で先頭) を選ぶ。
+// 預かった局が無い (または services が空) ときは、番号、無ければ名前の完全一致で引く。
 // 衛星は Mirakurun が TSID を出さないので、預かった局のサービスで引く。
 func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel) string {
 	var ofType []MirakurunChannel
@@ -109,32 +110,40 @@ func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel)
 		if want == nil {
 			return grByName(name, ofType, exact)
 		}
-		// 番号が一致する Mirakurun のチャンネル
-		var numbered []MirakurunChannel
+		// 「指定どおり」の Mirakurun のチャンネル: 番号一致 (T27→27) と名前の完全一致 (C13)
+		var specified []MirakurunChannel
+		seen := map[string]bool{}
 		if m := reUHF.FindStringSubmatch(name); m != nil {
 			for _, c := range ofType {
-				if reDigits.MatchString(c.Channel) && number(c.Channel) == number(m[1]) {
-					numbered = append(numbered, c)
+				if reDigits.MatchString(c.Channel) && number(c.Channel) == number(m[1]) && !seen[c.Channel] {
+					specified = append(specified, c)
+					seen[c.Channel] = true
 				}
 			}
 		}
-		// 1. 番号も局も一致する中継局
-		for _, c := range numbered {
+		for _, c := range ofType {
+			if c.Channel == name && !seen[c.Channel] {
+				specified = append(specified, c)
+				seen[c.Channel] = true
+			}
+		}
+		// 1. 指定どおりで、同じ局の中継局
+		for _, c := range specified {
 			if sameStream(*want, c) {
 				return c.Channel
 			}
 		}
-		if len(numbered) > 0 {
-			// 3. 番号は合うが Mirakurun に局があり、預かった局と違う (別の局になった)
-			for _, c := range numbered {
+		if len(specified) > 0 {
+			// 3. 指定どおりだが Mirakurun に局があり、預かった局と違う (別の局になった)
+			for _, c := range specified {
 				if len(c.Services) > 0 {
 					return ""
 				}
 			}
-			// 4. services が空のチャンネルは、番号で選ぶ (同じ局の別の中継局より優先)
-			return numbered[0].Channel
+			// 4. services が空の指定どおりのチャンネルは、同じ局の別の中継局より優先
+			return specified[0].Channel
 		}
-		// 2. 番号は問わず、同じ局のチャンネル (複数なら Mirakurun の並び順で先頭)
+		// 2. 指定どおりが無い: 同じ局のチャンネル (複数なら Mirakurun の並び順で先頭)
 		for _, c := range ofType {
 			if sameStream(*want, c) {
 				return c.Channel
