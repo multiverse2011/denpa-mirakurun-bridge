@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -384,24 +385,34 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 			t.Fatalf("%d %v: %s", c.status, c.body, got)
 		}
 	}
-	// 仮のカードを 1 枚名乗る (denpa の getActiveCardId が 16 桁の番号を読めること)。契約はカードに聞けない
+	// 仮のカードを 1 枚名乗る。source が remote だと denpa の getActiveCardId は readers の ids を見ない
 	res, err := http.Get(e.base + "/denpa/card")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var card struct {
-		OK      bool `json:"ok"`
+		OK      bool   `json:"ok"`
+		Source  string `json:"source"`
 		Readers []struct {
+			Name         string
 			Card, Active bool
 			IDs          []string `json:"ids"`
 		} `json:"readers"`
 	}
 	err = json.NewDecoder(res.Body).Decode(&card)
 	res.Body.Close()
-	if err != nil || !card.OK || len(card.Readers) != 1 || !card.Readers[0].Card || !card.Readers[0].Active ||
-		len(card.Readers[0].IDs) != 1 || !regexp.MustCompile(`^\d{16}$`).MatchString(card.Readers[0].IDs[0]) ||
-		card.Readers[0].IDs[0] != e.b.cardID() {
-		t.Fatalf("card: %v %+v", err, card)
+	if err != nil || res.StatusCode != 200 || !card.OK || card.Source != "local" || len(card.Readers) != 1 ||
+		card.Readers[0].Name == "" || !card.Readers[0].Card || !card.Readers[0].Active ||
+		!slices.Equal(card.Readers[0].IDs, []string{cardID(e.b.cfg.MirakurunURL)}) {
+		t.Fatalf("card: %v %d %+v", err, res.StatusCode, card)
+	}
+	// 仮のリーダーは止められない (denpa は本文を設定画面に出す)
+	req, _ := http.NewRequest("PUT", e.base+"/denpa/card/readers", strings.NewReader(`{"disabled":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	if res, err := http.DefaultClient.Do(req); err != nil || res.StatusCode != 405 {
+		t.Fatalf("card/readers: %v %v", err, res)
+	} else {
+		res.Body.Close()
 	}
 	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
 	if status != 501 || body["ok"] != false {
@@ -982,5 +993,27 @@ func TestStopClosesEvents(t *testing.T) {
 	case <-ended:
 	case <-time.After(time.Second):
 		t.Fatal("SSE が閉じません")
+	}
+}
+
+// 仮のカードの番号は MIRAKURUN_URL だけで決まり、10 進 16 桁で、実物の B-CAS 番号 (48 ビット) と重ならない
+func TestCardID(t *testing.T) {
+	re := regexp.MustCompile(`^\d{16}$`)
+	seen := map[string]string{}
+	for _, u := range []string{"http://127.0.0.1:40772", "http://mirakurun:40772", "http://localhost:40772", ""} {
+		id := cardID(u)
+		if id != cardID(u) || !re.MatchString(id) {
+			t.Fatalf("%q: %s", u, id)
+		}
+		if n, _ := strconv.ParseUint(id, 10, 64); n < 1<<48 {
+			t.Fatalf("%q: %s は 48 ビットに収まる", u, id)
+		}
+		if prev, ok := seen[id]; ok {
+			t.Fatalf("%q と %q が同じ番号 %s", u, prev, id)
+		}
+		seen[id] = u
+	}
+	if got := cardID("http://127.0.0.1:40772"); got != "4311722035850762" {
+		t.Fatalf("番号が変わった (denpa が覚えている契約が引き継がれなくなる): %s", got)
 	}
 }

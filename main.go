@@ -137,7 +137,7 @@ func run() error {
 		// Drain が 0 を見てからリスナーが閉じるまでに始まった録画も、ここで待つ (Shutdown は流れている応答を切らない)
 		b.Drain(time.Until(until))
 	}()
-	b.logf("listening on %s → Mirakurun %s", "%s で待ち受けます (Mirakurun: %s)", addr, mirakurun)
+	b.logf("listening on %s → Mirakurun %s (stand-in card %s)", "%s で待ち受けます (Mirakurun: %s、仮のカード: %s)", addr, mirakurun, cardID(mirakurun))
 	serve := srv.ListenAndServe
 	if pairing != nil {
 		srv.TLSConfig = pairing.TLSConfig()
