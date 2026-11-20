@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -383,7 +384,25 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 			t.Fatalf("%d %v: %s", c.status, c.body, got)
 		}
 	}
-	// カードも持たない
+	// 仮のカードを 1 枚名乗る (denpa の getActiveCardId が 16 桁の番号を読めること)。契約はカードに聞けない
+	res, err := http.Get(e.base + "/denpa/card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		OK      bool `json:"ok"`
+		Readers []struct {
+			Card, Active bool
+			IDs          []string `json:"ids"`
+		} `json:"readers"`
+	}
+	err = json.NewDecoder(res.Body).Decode(&card)
+	res.Body.Close()
+	if err != nil || !card.OK || len(card.Readers) != 1 || !card.Readers[0].Card || !card.Readers[0].Active ||
+		len(card.Readers[0].IDs) != 1 || !regexp.MustCompile(`^\d{16}$`).MatchString(card.Readers[0].IDs[0]) ||
+		card.Readers[0].IDs[0] != e.b.cardID() {
+		t.Fatalf("card: %v %+v", err, card)
+	}
 	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
 	if status != 501 || body["ok"] != false {
 		t.Fatalf("card/confirm: %d %v", status, body)

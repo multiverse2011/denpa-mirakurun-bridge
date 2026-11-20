@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"maps"
@@ -198,6 +199,14 @@ type Bridge struct {
 	heartbeat    time.Duration // SSE の死活確認の間隔
 	eventDelay   time.Duration // Mirakurun の通知をまとめる長さ
 	drainPoll    time.Duration // 止まる前に録画の終わりを見に行く間隔
+}
+
+// cardID は /denpa/card で名乗る仮のカードの番号 (10 進 16 桁)。denpa は契約の結果をこの番号で覚えるので、
+// 同じ Mirakurun なら再起動しても変えない
+func (b *Bridge) cardID() string {
+	h := fnv.New64a()
+	h.Write([]byte(b.cfg.MirakurunURL))
+	return fmt.Sprintf("%016d", h.Sum64()%1e16)
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
@@ -902,8 +911,13 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET /denpa/events":
 		b.events(w, r)
 	case "GET /denpa/card":
-		// 復号は Mirakurun の decoder が選局時に行う
-		writeJSON(w, 200, map[string]any{"ok": true, "message": "", "source": "local", "readers": []any{}})
+		// 復号は Mirakurun の decoder が選局時に行う。カードの番号が無いと denpa は復号の結果を書く先が無く、
+		// 有料の局をずっと「確かめていない」とする (自動予約も録らない)。そこで仮のカードを 1 枚名乗る。
+		// 契約はカードに聞けない (confirm は 501) ので、denpa は「復号を確かめる」と復号できた録画で局を契約中にする
+		writeJSON(w, 200, map[string]any{"ok": true, "source": "local", "message": "", "readers": []any{map[string]any{
+			"name": b.msg.t("Mirakurun decoder (no card)", "Mirakurun の decoder (カードなし)"),
+			"card": true, "active": true, "ids": []string{b.cardID()}, "tuners": []string{},
+		}}})
 	case "POST /denpa/decode":
 		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
 			"録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)")})
@@ -916,10 +930,10 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 501, map[string]string{"error": b.msg.t("the bridge does not read the raw TS directory (it does not decode after recording)",
 			"ブリッジは元の TS の置き場を読みません (録画後の復号をしないため)")})
 	case "POST /denpa/card/confirm":
-		// カードを持たない。denpa は /denpa/card の readers が空のエージェントを問い合わせ先に選ばないが、
-		// 来ても未対応と明示する (contracts.ts の confirmCardContract)
-		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("the bridge has no B-CAS card",
-			"ブリッジは B-CAS カードを持ちません")})
+		// 仮のカードなので契約は読めない。denpa は番組表に契約の情報 (0xCB) がある局でだけ呼び、失敗はそのまま見せる
+		// (contracts.ts の confirmCardContract)。そうした局も「復号を確かめる」で契約中にできる
+		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("the bridge has no B-CAS card to ask; use \"check decoding\" instead",
+			"ブリッジはカードに契約を聞けません。「復号を確かめる」で確かめてください")})
 	case "GET /denpa/logs":
 		b.mu.Lock()
 		lines := slices.Clone(b.logs)
