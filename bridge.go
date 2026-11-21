@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"maps"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -198,6 +200,38 @@ type Bridge struct {
 	heartbeat    time.Duration // SSE の死活確認の間隔
 	eventDelay   time.Duration // Mirakurun の通知をまとめる長さ
 	drainPoll    time.Duration // 止まる前に録画の終わりを見に行く間隔
+
+	cardID string // /denpa/card で名乗る仮のカードの番号 (loadCardID)
+}
+
+// loadCardID は /denpa/card で名乗る仮のカードの番号 (10 進 16 桁) を dir/card-id から読む。無ければ乱数で作って書く。
+// denpa は契約の結果をこの番号で覚えるので、再起動や MIRAKURUN_URL の書き換えで変えず、ブリッジごとに違える
+// (同じ番号のブリッジ同士は、片方で確かめた結果がもう片方にも効いてしまう)。
+// 2^48 以上にして実物の B-CAS 番号 (48 ビット) と重ならないようにする。denpa のデータ放送の getIRDID もこれを渡さない。
+// 読めない・壊れている・書けないときも、この起動の間だけ使う番号を返す (err はその理由)。壊れたファイルは上書きしない
+func loadCardID(dir string) (string, error) {
+	const lo, hi = 1 << 48, 10_000_000_000_000_000
+	name := filepath.Join(dir, "card-id")
+	n, err := rand.Int(rand.Reader, big.NewInt(hi-lo))
+	if err != nil {
+		return "", err
+	}
+	fresh := fmt.Sprintf("%016d", lo+n.Int64())
+	data, err := os.ReadFile(name)
+	if err == nil {
+		id := strings.TrimSpace(string(data))
+		if n, err := strconv.ParseUint(id, 10, 64); err != nil || len(id) != 16 || n < lo {
+			return fresh, fmt.Errorf("%s: %q", name, id)
+		}
+		return id, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fresh, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fresh, err
+	}
+	return fresh, writePrivate(name, []byte(fresh+"\n"))
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
@@ -220,6 +254,14 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if u, err := url.Parse(cfg.MirakurunURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, errors.New(b.msg.t("MIRAKURUN_URL must be an http(s) URL such as http://mirakurun:40772: %s",
 			"MIRAKURUN_URL は http://mirakurun:40772 のような http(s) の URL です: %s", cfg.MirakurunURL))
+	}
+	// 仮のカードは補助なので、番号を保存できなくても止まらない
+	var err error
+	if b.cardID, err = loadCardID(filepath.Dir(cfg.ChannelsFile)); b.cardID == "" {
+		return nil, err
+	} else if err != nil {
+		b.logf("could not keep the stand-in card number (%v); using %s until restart. Decode checks in denpa will not carry over after a restart",
+			"仮のカードの番号を保存できません (%v)。この起動の間は %s を使います。再起動すると番号が変わり、denpa で確かめた復号の結果は引き継がれません", err, b.cardID)
 	}
 	data, err := os.ReadFile(cfg.ChannelsFile)
 	if err == nil {
@@ -902,8 +944,15 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET /denpa/events":
 		b.events(w, r)
 	case "GET /denpa/card":
-		// 復号は Mirakurun の decoder が選局時に行う
-		writeJSON(w, 200, map[string]any{"ok": true, "message": "", "source": "local", "readers": []any{}})
+		// 復号は Mirakurun の decoder が選局時に行う。カードの番号が無いと denpa は復号の結果を書く先が無く、
+		// 有料の局をずっと「確かめていない」とする (自動予約も録らない)。そこで仮のカードを 1 枚名乗る。
+		// 契約はカードに聞けない (confirm は 501) ので、denpa は「復号を確かめる」と、復号できた録画をエンコードしたときに局を契約中にする。
+		// denpa にはカードを持つエージェントに見えるので、有料の局の振り分けでも候補に入る (契約中と確かめた局が先)。
+		// source は local にする (remote だと denpa は readers の ids を見ない)。名前の括弧は denpa が名前の下に小さく出す
+		writeJSON(w, 200, map[string]any{"ok": true, "source": "local", "message": "", "readers": []any{map[string]any{
+			"name": b.msg.t("Mirakurun decoder (stand-in card)", "Mirakurun の decoder (仮のカード)"),
+			"card": true, "active": true, "ids": []string{b.cardID}, "tuners": []string{},
+		}}})
 	case "POST /denpa/decode":
 		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
 			"録画後の復号には対応していません (復号は選局時に Mirakurun の decoder が行います)")})
@@ -915,11 +964,16 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 501 にしておくと、設定の「受信」に警告が出ない
 		writeJSON(w, 501, map[string]string{"error": b.msg.t("the bridge does not read the raw TS directory (it does not decode after recording)",
 			"ブリッジは元の TS の置き場を読みません (録画後の復号をしないため)")})
+	case "PUT /denpa/card/readers":
+		// 仮のリーダーは止められない。本文は denpa の設定画面にそのまま出る (scramble.ts の putCardReaders)
+		writeJSON(w, 405, map[string]string{"error": b.msg.t("the bridge's card reader is a stand-in; decoding is done by Mirakurun's decoder",
+			"ブリッジのカードリーダーは仮のものです。復号は Mirakurun の decoder が行います")})
 	case "POST /denpa/card/confirm":
-		// カードを持たない。denpa は /denpa/card の readers が空のエージェントを問い合わせ先に選ばないが、
-		// 来ても未対応と明示する (contracts.ts の confirmCardContract)
-		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("the bridge has no B-CAS card",
-			"ブリッジは B-CAS カードを持ちません")})
+		// 仮のカードなので契約は読めない。denpa は番組表に契約の情報 (0xCB) がある局でだけ呼び、失敗はそのまま見せる
+		// (contracts.ts の confirmCardContract)。そうした局も「復号を確かめる」で契約中にできる。
+		// 12 時間ごとの定期の確認でも出るので、仮のカードだからだと分かる文にする。ボタン名は denpa の画面のまま
+		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("the bridge's card is a stand-in and cannot answer contract queries; use the decode check (「復号を確かめる」) while a paid program is airing",
+			"ブリッジのカードは仮のもので、契約に答えられません。有料の番組を流している間に「復号を確かめる」で確かめてください")})
 	case "GET /denpa/logs":
 		b.mu.Lock()
 		lines := slices.Clone(b.logs)

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -383,7 +385,35 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 			t.Fatalf("%d %v: %s", c.status, c.body, got)
 		}
 	}
-	// カードも持たない
+	// 仮のカードを 1 枚名乗る。source が remote だと denpa の getActiveCardId は readers の ids を見ない
+	res, err := http.Get(e.base + "/denpa/card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		OK      bool   `json:"ok"`
+		Source  string `json:"source"`
+		Readers []struct {
+			Name         string
+			Card, Active bool
+			IDs          []string `json:"ids"`
+		} `json:"readers"`
+	}
+	err = json.NewDecoder(res.Body).Decode(&card)
+	res.Body.Close()
+	if err != nil || res.StatusCode != 200 || !card.OK || card.Source != "local" || len(card.Readers) != 1 ||
+		card.Readers[0].Name == "" || !card.Readers[0].Card || !card.Readers[0].Active ||
+		!slices.Equal(card.Readers[0].IDs, []string{e.b.cardID}) {
+		t.Fatalf("card: %v %d %+v", err, res.StatusCode, card)
+	}
+	// 仮のリーダーは止められない (denpa は本文を設定画面に出す)
+	req, _ := http.NewRequest("PUT", e.base+"/denpa/card/readers", strings.NewReader(`{"disabled":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	if res, err := http.DefaultClient.Do(req); err != nil || res.StatusCode != 405 {
+		t.Fatalf("card/readers: %v %v", err, res)
+	} else {
+		res.Body.Close()
+	}
 	status, body = post("/denpa/card/confirm", `{"verification":"AA==","date":61000}`)
 	if status != 501 || body["ok"] != false {
 		t.Fatalf("card/confirm: %d %v", status, body)
@@ -963,5 +993,59 @@ func TestStopClosesEvents(t *testing.T) {
 	case <-ended:
 	case <-time.After(time.Second):
 		t.Fatal("SSE が閉じません")
+	}
+}
+
+// 仮のカードの番号は初回に作って保存し、次からはそれを読む。ブリッジ (置き場) ごとに違い、10 進 16 桁で、
+// 実物の B-CAS 番号 (48 ビット) と重ならない。壊れている・書けないときは、上書きせずにその起動の間だけの番号を返す
+func TestLoadCardID(t *testing.T) {
+	valid := func(id string) bool {
+		n, err := strconv.ParseUint(id, 10, 64)
+		return err == nil && len(id) == 16 && n >= 1<<48
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	id, err := loadCardID(dir)
+	if err != nil || !valid(id) {
+		t.Fatalf("番号: %s %v", id, err)
+	}
+	if again, err := loadCardID(dir); err != nil || again != id {
+		t.Fatalf("読み直すと変わった: %s → %s %v", id, again, err)
+	}
+	if other, err := loadCardID(t.TempDir()); err != nil || other == id {
+		t.Fatalf("別のブリッジと同じ番号: %s %v", other, err)
+	}
+	for _, bad := range []string{"", "123", "0000000000000001", "abcdefghijklmnop"} {
+		name := filepath.Join(dir, "card-id")
+		if err := os.WriteFile(name, []byte(bad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadCardID(dir)
+		if data, _ := os.ReadFile(name); err == nil || !valid(got) || string(data) != bad {
+			t.Fatalf("%q: %s %v (ファイル %q)", bad, got, err, data)
+		}
+	}
+	// 置き場を作れない (ファイルがある)
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loadCardID(file); err == nil || !valid(got) {
+		t.Fatalf("書けないとき: %s %v", got, err)
+	}
+}
+
+// 番号を保存できなくても (置き場が読み取り専用) 起動し、その起動の間だけの番号を名乗る
+func TestNewBridgeCardIDUnwritable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if os.WriteFile(filepath.Join(dir, "probe"), nil, 0o600) == nil {
+		t.Skip("読み取り専用の置き場にも書ける (root)")
+	}
+	b, err := NewBridge(Config{MirakurunURL: "http://127.0.0.1:40772", ChannelsFile: filepath.Join(dir, "channels.json")})
+	if err != nil || len(b.cardID) != 16 {
+		t.Fatalf("%v %+v", err, b)
 	}
 }
