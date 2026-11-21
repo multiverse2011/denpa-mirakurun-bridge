@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,8 +54,13 @@ func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorit
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewBridge(Config{MirakurunURL: mk.URL, PriorityMap: pm, ChannelsFile: filepath.Join(t.TempDir(), "channels.json"),
-		Version: "test", KeylessTuners: keylessTuners})
+	dir := t.TempDir()
+	cardID, err := loadCardID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewBridge(Config{MirakurunURL: mk.URL, PriorityMap: pm, ChannelsFile: filepath.Join(dir, "channels.json"),
+		Version: "test", KeylessTuners: keylessTuners, CardID: cardID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +408,7 @@ func TestAgentAPIsAddedInV251(t *testing.T) {
 	res.Body.Close()
 	if err != nil || res.StatusCode != 200 || !card.OK || card.Source != "local" || len(card.Readers) != 1 ||
 		card.Readers[0].Name == "" || !card.Readers[0].Card || !card.Readers[0].Active ||
-		!slices.Equal(card.Readers[0].IDs, []string{cardID(e.b.cfg.MirakurunURL)}) {
+		!slices.Equal(card.Readers[0].IDs, []string{e.b.cfg.CardID}) {
 		t.Fatalf("card: %v %d %+v", err, res.StatusCode, card)
 	}
 	// 仮のリーダーは止められない (denpa は本文を設定画面に出す)
@@ -996,24 +1001,29 @@ func TestStopClosesEvents(t *testing.T) {
 	}
 }
 
-// 仮のカードの番号は MIRAKURUN_URL だけで決まり、10 進 16 桁で、実物の B-CAS 番号 (48 ビット) と重ならない
-func TestCardID(t *testing.T) {
-	re := regexp.MustCompile(`^\d{16}$`)
-	seen := map[string]string{}
-	for _, u := range []string{"http://127.0.0.1:40772", "http://mirakurun:40772", "http://localhost:40772", ""} {
-		id := cardID(u)
-		if id != cardID(u) || !re.MatchString(id) {
-			t.Fatalf("%q: %s", u, id)
-		}
-		if n, _ := strconv.ParseUint(id, 10, 64); n < 1<<48 {
-			t.Fatalf("%q: %s は 48 ビットに収まる", u, id)
-		}
-		if prev, ok := seen[id]; ok {
-			t.Fatalf("%q と %q が同じ番号 %s", u, prev, id)
-		}
-		seen[id] = u
+// 仮のカードの番号は初回に作って保存し、次からはそれを読む。ブリッジ (置き場) ごとに違い、10 進 16 桁で、
+// 実物の B-CAS 番号 (48 ビット) と重ならない。壊れていたら作り直さずに止まる
+func TestLoadCardID(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	id, err := loadCardID(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := cardID("http://127.0.0.1:40772"); got != "4311722035850762" {
-		t.Fatalf("番号が変わった (denpa が覚えている契約が引き継がれなくなる): %s", got)
+	if n, err := strconv.ParseUint(id, 10, 64); err != nil || len(id) != 16 || n < 1<<48 {
+		t.Fatalf("番号: %s", id)
+	}
+	if again, err := loadCardID(dir); err != nil || again != id {
+		t.Fatalf("読み直すと変わった: %s → %s %v", id, again, err)
+	}
+	if other, err := loadCardID(t.TempDir()); err != nil || other == id {
+		t.Fatalf("別のブリッジと同じ番号: %s %v", other, err)
+	}
+	for _, bad := range []string{"", "123", "0000000000000001", "abcdefghijklmnop"} {
+		if err := os.WriteFile(filepath.Join(dir, "card-id"), []byte(bad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := loadCardID(dir); err == nil {
+			t.Fatalf("%q を読めてしまった: %s", bad, got)
+		}
 	}
 }

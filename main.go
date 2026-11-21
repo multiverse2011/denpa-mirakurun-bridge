@@ -89,10 +89,16 @@ func run() error {
 		return errors.New(msg.t("AGENT_TLS must be 1 or 0 (got %s)", "AGENT_TLS は 1 か 0 で指定してください (指定値: %s)", os.Getenv("AGENT_TLS")))
 	}
 	mirakurun := strings.TrimRight(env("MIRAKURUN_URL", "http://127.0.0.1:40772"), "/")
+	channelsFile := env("CHANNELS_FILE", "data/channels.json")
+	cardID, err := loadCardID(filepath.Dir(channelsFile))
+	if err != nil {
+		return err
+	}
 	b, err := NewBridge(Config{
 		MirakurunURL:  mirakurun,
 		PriorityMap:   priorityMap,
-		ChannelsFile:  env("CHANNELS_FILE", "data/channels.json"),
+		ChannelsFile:  channelsFile,
+		CardID:        cardID,
 		AllowedHosts:  allowed,
 		Version:       env("DENPA_VERSION", "bridge-"+version),
 		AgentName:     env("AGENT_NAME", ""),
@@ -137,7 +143,7 @@ func run() error {
 		// Drain が 0 を見てからリスナーが閉じるまでに始まった録画も、ここで待つ (Shutdown は流れている応答を切らない)
 		b.Drain(time.Until(until))
 	}()
-	b.logf("listening on %s → Mirakurun %s (stand-in card %s)", "%s で待ち受けます (Mirakurun: %s、仮のカード: %s)", addr, mirakurun, cardID(mirakurun))
+	b.logf("listening on %s → Mirakurun %s (stand-in card %s)", "%s で待ち受けます (Mirakurun: %s、仮のカード: %s)", addr, mirakurun, cardID)
 	serve := srv.ListenAndServe
 	if pairing != nil {
 		srv.TLSConfig = pairing.TLSConfig()

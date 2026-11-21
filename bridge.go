@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log"
 	"maps"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,6 +37,7 @@ type Config struct {
 	EPGMode       string // "broadcast" (既定) か "synthetic" (実験的: use=epg を Mirakurun の番組表から合成)
 	DecodeKeyless bool   // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
 	English       bool
+	CardID        string   // /denpa/card で名乗る仮のカードの番号 (loadCardID)
 	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
 
@@ -201,14 +203,34 @@ type Bridge struct {
 	drainPoll    time.Duration // 止まる前に録画の終わりを見に行く間隔
 }
 
-// cardID は /denpa/card で名乗る仮のカードの番号 (10 進 16 桁)。denpa は契約の結果をこの番号で覚えるので、
-// MIRAKURUN_URL の文字列が同じなら再起動しても変えない (表記を変えると別の番号になり、確かめた結果は引き継がれない)。
+// loadCardID は /denpa/card で名乗る仮のカードの番号 (10 進 16 桁) を dir/card-id から読む。無ければ乱数で作って書く。
+// denpa は契約の結果をこの番号で覚えるので、再起動や MIRAKURUN_URL の書き換えで変えず、ブリッジごとに違える
+// (同じ番号のブリッジ同士は、片方で確かめた結果がもう片方にも効いてしまう)。
 // 2^48 以上にして実物の B-CAS 番号 (48 ビット) と重ならないようにする。denpa のデータ放送の getIRDID もこれを渡さない
-func cardID(mirakurunURL string) string {
+func loadCardID(dir string) (string, error) {
 	const lo, hi = 1 << 48, 10_000_000_000_000_000
-	h := fnv.New64a()
-	h.Write([]byte(mirakurunURL))
-	return fmt.Sprintf("%016d", lo+h.Sum64()%(hi-lo))
+	name := filepath.Join(dir, "card-id")
+	data, err := os.ReadFile(name)
+	if err == nil {
+		// 壊れていても作り直さない (作り直すと、確かめた結果が全部「確かめていない」に戻る)
+		id := strings.TrimSpace(string(data))
+		if n, err := strconv.ParseUint(id, 10, 64); err != nil || len(id) != 16 || n < lo {
+			return "", fmt.Errorf("%s: not a 16-digit stand-in card number: %q", name, id)
+		}
+		return id, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(hi-lo))
+	if err != nil {
+		return "", err
+	}
+	id := fmt.Sprintf("%016d", lo+n.Int64())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return id, writePrivate(name, []byte(id+"\n"))
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
@@ -920,7 +942,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// source は local にする (remote だと denpa は readers の ids を見ない)。名前の括弧は denpa が名前の下に小さく出す
 		writeJSON(w, 200, map[string]any{"ok": true, "source": "local", "message": "", "readers": []any{map[string]any{
 			"name": b.msg.t("Mirakurun decoder (stand-in card)", "Mirakurun の decoder (仮のカード)"),
-			"card": true, "active": true, "ids": []string{cardID(b.cfg.MirakurunURL)}, "tuners": []string{},
+			"card": true, "active": true, "ids": []string{b.cfg.CardID}, "tuners": []string{},
 		}}})
 	case "POST /denpa/decode":
 		writeJSON(w, 501, map[string]any{"ok": false, "error": b.msg.t("decoding after recording is not supported (Mirakurun's decoder decodes while tuning)",
