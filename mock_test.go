@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"denpa-mirakurun-bridge/internal/arib"
+	"denpa-mirakurun-bridge/internal/channels"
 )
 
 // 偽の Mirakurun。選び方は Tuner._pickTunerDevice() をなぞる
@@ -45,7 +46,7 @@ type mockMirakurun struct {
 	*httptest.Server
 	mu            sync.Mutex
 	devices       []*mockDevice
-	channels      []MirakurunChannel
+	channels      []channels.Mirakurun
 	requests      []mockRequest
 	events        []chan struct{}
 	seq           int
@@ -71,8 +72,8 @@ func (m *mockMirakurun) programsStats() (calls, peak int) {
 	return m.programsCalls, m.programsPeak
 }
 
-func newMock(tuners [][]string, channels []MirakurunChannel) *mockMirakurun {
-	m := &mockMirakurun{channels: channels}
+func newMock(tuners [][]string, mkChannels []channels.Mirakurun) *mockMirakurun {
+	m := &mockMirakurun{channels: mkChannels}
 	for i, types := range tuners {
 		m.devices = append(m.devices, &mockDevice{name: fmt.Sprintf("T%d", i), types: types, available: true})
 	}
@@ -239,7 +240,7 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	m.requests = append(m.requests, mockRequest{ch, priority, r.URL.Query().Get("decode"), r.Header.Get("User-Agent")})
-	if !slices.ContainsFunc(m.channels, func(c MirakurunChannel) bool { return c.Type == typ && c.Channel == ch }) {
+	if !slices.ContainsFunc(m.channels, func(c channels.Mirakurun) bool { return c.Type == typ && c.Channel == ch }) {
 		m.mu.Unlock()
 		send(404, map[string]string{"error": "Not Found"})
 		return

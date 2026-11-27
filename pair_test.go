@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,31 +12,30 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/pairing"
 )
 
 // denpa 役のクライアント。自分の証明書を出し、ブリッジの証明書は確かめない (覚えるのは組んだ後の denpa の仕事)
 func denpaClient(t *testing.T) (*http.Client, string) {
 	t.Helper()
-	keyPEM, certPEM, err := newCertificatePEM()
+	q, err := pairing.Load(t.TempDir(), "") // 証明書の作り方はブリッジと同じ
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cert := q.Certificate
 	c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true}}}
 	t.Cleanup(c.CloseIdleConnections)
-	return c, fingerprintOf(cert.Certificate[0])
+	return c, pairing.Fingerprint(cert.Certificate[0])
 }
 
-func setupTLS(t *testing.T, dir, envToken string) (*Pairing, string) {
+func setupTLS(t *testing.T, dir, envToken string) (*pairing.Pairing, string) {
 	t.Helper()
-	p, err := LoadPairing(dir, envToken)
+	p, err := pairing.Load(dir, envToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.failDelay = 50 * time.Millisecond
+	p.FailDelay = 50 * time.Millisecond
 	b, err := NewBridge(Config{MirakurunURL: "http://127.0.0.1:1", ChannelsFile: filepath.Join(t.TempDir(), "channels.json"), Version: "test", Pairing: p})
 	if err != nil {
 		t.Fatal(err)
@@ -87,23 +85,23 @@ func TestPairAndRestart(t *testing.T) {
 	if _, unpaired := p.PairURL("h", "1"); !unpaired {
 		t.Fatal("PairURL should report unpaired")
 	}
-	status, body := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d))
-	if status != 200 || body["proof"] != pairProof(p.token, "agent", p.fingerprint, d) {
+	status, body := postPair(t, c, base, d, p.Proof("client", d))
+	if status != 200 || body["proof"] != p.Proof("agent", d) {
 		t.Fatalf("pair: %d %v", status, body)
 	}
 	if status, _ := getChannels(t, c, base); status != 200 {
 		t.Fatalf("paired: %d", status)
 	}
 	// 組んだ相手からの組み直しも受ける
-	if status, _ := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d)); status != 200 {
+	if status, _ := postPair(t, c, base, d, p.Proof("client", d)); status != 200 {
 		t.Fatalf("re-pair: %d", status)
 	}
 
-	again, err := LoadPairing(dir, "")
+	again, err := pairing.Load(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.fingerprint != p.fingerprint || again.token != p.token || !again.clients[d] {
+	if again.Proof("agent", d) != p.Proof("agent", d) || !again.Paired(d) { // 証明書と合言葉が同じなら proof も同じ
 		t.Fatal("restart must keep the certificate, token and clients")
 	}
 	for _, f := range []string{"agent.key", "agent.crt", "pair-token", "clients"} {
@@ -114,14 +112,30 @@ func TestPairAndRestart(t *testing.T) {
 }
 
 func TestPairRefusals(t *testing.T) {
-	p, base := setupTLS(t, t.TempDir(), "")
+	dir := t.TempDir()
+	p, base := setupTLS(t, dir, "")
+	// 証明書 (指紋) は同じで合言葉だけ違う
+	wrongDir := t.TempDir()
+	for _, name := range []string{"agent.key", "agent.crt"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err == nil {
+			err = os.WriteFile(filepath.Join(wrongDir, name), data, 0o600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrong, err := pairing.Load(wrongDir, "wrong")
+	if err != nil {
+		t.Fatal(err)
+	}
 	c, d := denpaClient(t)
 	_, other := denpaClient(t)
 
-	if status, body := postPair(t, c, base, d, pairProof("wrong", "client", p.fingerprint, d)); status != 403 || !strings.Contains(body["error"].(string), "合言葉") {
+	if status, body := postPair(t, c, base, d, wrong.Proof("client", d)); status != 403 || !strings.Contains(body["error"].(string), "合言葉") {
 		t.Fatalf("wrong token: %d %v", status, body)
 	}
-	if status, body := postPair(t, c, base, other, pairProof(p.token, "client", p.fingerprint, other)); status != 403 || !strings.Contains(body["error"].(string), "一致しません") {
+	if status, body := postPair(t, c, base, other, p.Proof("client", other)); status != 403 || !strings.Contains(body["error"].(string), "一致しません") {
 		t.Fatalf("wrong client: %d %v", status, body)
 	}
 	if status, _ := postPair(t, c, base, d, ""); status != 403 {
@@ -160,7 +174,7 @@ func TestUnpairRemovesOnlyTheCaller(t *testing.T) {
 		c *http.Client
 		d string
 	}{{c1, d1}, {c2, d2}} {
-		if status, _ := postPair(t, x.c, base, x.d, pairProof(p.token, "client", p.fingerprint, x.d)); status != 200 {
+		if status, _ := postPair(t, x.c, base, x.d, p.Proof("client", x.d)); status != 200 {
 			t.Fatalf("pair %s: %d", x.d[:8], status)
 		}
 	}
@@ -181,12 +195,12 @@ func TestUnpairRemovesOnlyTheCaller(t *testing.T) {
 		t.Fatalf("other denpa must stay paired: %d", status)
 	}
 
-	again, err := LoadPairing(dir, "")
+	again, err := pairing.Load(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.clients[d1] || !again.clients[d2] {
-		t.Fatalf("clients: %v", again.clients)
+	if again.Paired(d1) || !again.Paired(d2) {
+		t.Fatalf("clients: d1=%v d2=%v", again.Paired(d1), again.Paired(d2))
 	}
 }
 
@@ -195,7 +209,7 @@ func TestUnpairSaveFailureKeepsThePairing(t *testing.T) {
 	dir := t.TempDir()
 	p, base := setupTLS(t, dir, "")
 	c, d := denpaClient(t)
-	if status, _ := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d)); status != 200 {
+	if status, _ := postPair(t, c, base, d, p.Proof("client", d)); status != 200 {
 		t.Fatalf("pair: %d", status)
 	}
 	// clients をディレクトリに置き換えて、rename を失敗させる
@@ -209,7 +223,7 @@ func TestUnpairSaveFailureKeepsThePairing(t *testing.T) {
 	if status := deletePair(t, c, base); status != 500 {
 		t.Fatalf("DELETE: %d", status)
 	}
-	if !p.clients[d] {
+	if !p.Paired(d) {
 		t.Fatal("保存に失敗したら組を戻すこと")
 	}
 	if status, _ := getChannels(t, c, base); status != 200 {
@@ -217,36 +231,23 @@ func TestUnpairSaveFailureKeepsThePairing(t *testing.T) {
 	}
 }
 
-func TestPairTokenFromEnv(t *testing.T) {
+// 書き込めなければ、足した組を戻す
+func TestPairSaveFailureKeepsUnpaired(t *testing.T) {
 	dir := t.TempDir()
-	p, err := LoadPairing(dir, " given \n")
-	if err != nil {
+	p, base := setupTLS(t, dir, "")
+	c, d := denpaClient(t)
+	// clients をディレクトリにして、rename を失敗させる
+	if err := os.Mkdir(filepath.Join(dir, "clients"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if p.token != "given" {
-		t.Fatalf("token %q", p.token)
+	if status, _ := postPair(t, c, base, d, p.Proof("client", d)); status != 500 {
+		t.Fatalf("pair: %d", status)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "pair-token")); !os.IsNotExist(err) {
-		t.Fatal("pair-token must not be written when AGENT_PAIR_TOKEN is set")
+	if p.Paired(d) {
+		t.Fatal("保存に失敗したら組まないこと")
 	}
-}
-
-// denpa (Bun) が信頼の起点にできる形か: basicConstraints と keyUsage を付けない (AgentTls.cs の CreatePem)
-func TestCertificateShape(t *testing.T) {
-	p, err := LoadPairing(t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(p.Certificate.Certificate[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cert.BasicConstraintsValid || cert.KeyUsage != 0 || len(cert.SubjectKeyId) == 0 || len(cert.AuthorityKeyId) != 0 ||
-		cert.Subject.CommonName != "denpa-agent" || cert.NotAfter.Year()-cert.NotBefore.Year() < 99 {
-		t.Fatalf("unexpected certificate: %+v", cert)
-	}
-	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
-		t.Fatal(err)
+	if status, _ := getChannels(t, c, base); status != 403 {
+		t.Fatalf("unsaved denpa must not pass: %d", status)
 	}
 }
 
@@ -260,11 +261,11 @@ func TestWrongProofsAreSerialized(t *testing.T) {
 		wg.Go(func() { postPair(t, c, base, d, "wrong") })
 	}
 	wg.Wait()
-	if elapsed := time.Since(start); elapsed < 4*p.failDelay {
+	if elapsed := time.Since(start); elapsed < 4*p.FailDelay {
 		t.Fatalf("wrong proofs must wait one by one: %v", elapsed)
 	}
 	// 正しい合言葉は外れの後でも組める
-	if status, _ := postPair(t, c, base, d, pairProof(p.token, "client", p.fingerprint, d)); status != 200 {
+	if status, _ := postPair(t, c, base, d, p.Proof("client", d)); status != 200 {
 		t.Fatalf("pair after failures: %d", status)
 	}
 }

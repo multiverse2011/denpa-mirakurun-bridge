@@ -26,6 +26,9 @@ import (
 	"time"
 
 	"denpa-mirakurun-bridge/internal/arib"
+	"denpa-mirakurun-bridge/internal/atomicfile"
+	"denpa-mirakurun-bridge/internal/channels"
+	"denpa-mirakurun-bridge/internal/pairing"
 )
 
 type Config struct {
@@ -39,7 +42,7 @@ type Config struct {
 	EPGMode       string // "broadcast" (既定) か "synthetic" (実験的: use=epg を Mirakurun の番組表から合成)
 	DecodeKeyless bool   // 番組表・ロゴ・スキャンでも decode=1 にする (上流が decode の異なる要求を共有しないとき用)
 	English       bool
-	Pairing       *Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
+	Pairing       *pairing.Pairing // nil なら平文の HTTP (v2.27.0 以前の denpa 向け)
 }
 
 // messages は応答とログの言葉を選ぶ。コードには英語を先に書き、既定 (en=false) では日本語を出す
@@ -186,7 +189,7 @@ type Bridge struct {
 	claims    map[*claim]struct{}
 	listeners map[*listener]struct{}
 	stored    []json.RawMessage
-	parsed    []DenpaChannel
+	parsed    []channels.Denpa
 	logs      []logLine
 
 	epgMu       sync.Mutex // Mirakurun の番組表の控え
@@ -233,7 +236,7 @@ func loadCardID(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fresh, err
 	}
-	return fresh, writePrivate(name, []byte(fresh+"\n"))
+	return fresh, atomicfile.WritePrivate(name, []byte(fresh+"\n"))
 }
 
 func NewBridge(cfg Config) (*Bridge, error) {
@@ -279,7 +282,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 }
 
 func (b *Bridge) setStored(raw []json.RawMessage) {
-	parsed := make([]DenpaChannel, len(raw))
+	parsed := make([]channels.Denpa, len(raw))
 	for i, r := range raw {
 		_ = json.Unmarshal(r, &parsed[i])
 	}
@@ -359,11 +362,11 @@ func (b *Bridge) oursLocked() map[string]*active {
 
 func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 	var list []mkTuner
-	var channels []MirakurunChannel
+	var mkChannels []channels.Mirakurun
 	if err := b.mk(ctx, "/api/tuners", &list); err != nil {
 		return nil, err
 	}
-	if err := b.mk(ctx, "/api/channels", &channels); err != nil {
+	if err := b.mk(ctx, "/api/channels", &mkChannels); err != nil {
 		return nil, err
 	}
 	mine := b.ours()
@@ -377,7 +380,7 @@ func (b *Bridge) tuners(ctx context.Context) ([]map[string]any, error) {
 		var channel, rank, errText any
 		for _, u := range t.Users {
 			if c := u.StreamSetting; c != nil && c.Channel != nil {
-				channel = map[string]string{"type": c.Channel.Type, "channel": toDenpa(c.Channel.Type, c.Channel.Channel, stored, channels)}
+				channel = map[string]string{"type": c.Channel.Type, "channel": channels.ToDenpa(c.Channel.Type, c.Channel.Channel, stored, mkChannels)}
 				break
 			}
 		}
@@ -592,13 +595,13 @@ func (b *Bridge) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var mkChannels []MirakurunChannel
+	var mkChannels []channels.Mirakurun
 	if err := b.mk(r.Context(), "/api/channels", &mkChannels); err != nil {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
 	b.mu.Lock()
-	mkChannel := toMirakurun(typ, channel, b.parsed, mkChannels)
+	mkChannel := channels.ToMirakurun(typ, channel, b.parsed, mkChannels)
 	var leaving []*active
 	for a := range b.active {
 		if slices.Contains(q["after"], a.use) {
@@ -807,13 +810,13 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	data, _ := json.MarshalIndent(next, "", "  ")
 	err := os.MkdirAll(filepath.Dir(b.cfg.ChannelsFile), 0o755)
 	if err == nil {
-		err = writeSynced(b.cfg.ChannelsFile+".tmp", data, 0o644)
+		err = atomicfile.WriteSynced(b.cfg.ChannelsFile+".tmp", data, 0o644)
 	}
 	if err == nil {
 		err = os.Rename(b.cfg.ChannelsFile+".tmp", b.cfg.ChannelsFile)
 	}
 	if err == nil {
-		err = syncDir(filepath.Dir(b.cfg.ChannelsFile))
+		err = atomicfile.SyncDir(filepath.Dir(b.cfg.ChannelsFile))
 	}
 	if err == nil {
 		b.mu.Lock()
@@ -827,39 +830,6 @@ func (b *Bridge) putChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	b.emit("channels")
 	writeJSON(w, 200, next)
-}
-
-// rename の前に中身をディスクへ落とし、電源断で空の channels.json が残らないようにする
-func writeSynced(name string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	// 書きかけが前から残っていると OpenFile の perm は効かない
-	err = f.Chmod(perm)
-	if err == nil {
-		_, err = f.Write(data)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
-
-// rename もディスクへ落とす。落とさないと 200 を返した保存が電源断で前の中身に戻りうる
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }
 
 func (b *Bridge) events(w http.ResponseWriter, r *http.Request) {
