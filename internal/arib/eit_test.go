@@ -1,4 +1,4 @@
-package main
+package arib
 
 import (
 	"bytes"
@@ -12,11 +12,11 @@ import (
 
 func TestCRC32MPEG(t *testing.T) {
 	// MPEG-2 の CRC32 の知られている値
-	if got := crc32MPEG([]byte("123456789")); got != 0x0376e6e7 {
+	if got := CRC32MPEG([]byte("123456789")); got != 0x0376e6e7 {
 		t.Fatalf("%08x", got)
 	}
 	section := withCRC([]byte{0x4e, 0, 0, 0x04, 0x00, 0xc1, 0, 0, 0, 0, 0, 0, 0, 0x51})
-	if crc32MPEG(section) != 0 {
+	if CRC32MPEG(section) != 0 {
 		t.Fatal("CRC を付けたセクションを回すと 0 になりません")
 	}
 	if int(section[1]&0x0f)<<8|int(section[2]) != len(section)-3 {
@@ -190,7 +190,7 @@ func TestSplitAribStringBoundaries(t *testing.T) {
 // 長い説明は short_event に収まる分だけを残し、あふれた後半を extended の「番組内容」に移す
 func TestLongDescriptionMovesTailToExtended(t *testing.T) {
 	desc := strings.Repeat("あ", 200) // 400 バイト
-	p := epgProgram{
+	p := Program{
 		EventID: 1, StartAt: 1, Duration: 1, Name: "テスト", Description: desc,
 		Extended: map[string]string{"番組内容": "前書き"},
 	}
@@ -346,14 +346,14 @@ func TestExtendedEventDescriptorBoundary(t *testing.T) {
 
 func TestEventDescriptors(t *testing.T) {
 	start := time.Date(2026, 11, 17, 12, 34, 56, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
-	p := epgProgram{
+	p := Program{
 		EventID: 0x1234, ServiceID: 1024, NetworkID: 32736,
 		StartAt: start, Duration: 30 * time.Minute.Milliseconds(), IsFree: false,
 		Name: "番組A", Description: "説明",
 		Extended: map[string]string{"出演者": "太郎"},
-		Genres:   []epgGenre{{Lv1: 7, Lv2: 1, Un1: 0, Un2: 0}},
-		Video:    &epgVideo{StreamContent: 1, ComponentType: 0xb3},
-		Audios:   []epgAudio{{ComponentType: 3, ComponentTag: 0x11, IsMain: true, SamplingRate: 48000, Langs: []string{"jpn"}}},
+		Genres:   []Genre{{Lv1: 7, Lv2: 1, Un1: 0, Un2: 0}},
+		Video:    &Video{StreamContent: 1, ComponentType: 0xb3},
+		Audios:   []Audio{{ComponentType: 3, ComponentTag: 0x11, IsMain: true, SamplingRate: 48000, Langs: []string{"jpn"}}},
 	}
 	ev := eitEventBytes(p, 4)
 	if binary.BigEndian.Uint16(ev) != 0x1234 {
@@ -390,17 +390,17 @@ func descriptorTags(data []byte) []byte {
 
 func TestEITScheduleTableIDs(t *testing.T) {
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
-	svc := epgService{NetworkID: 4, ServiceID: 101, Type: 1}
-	programs := []epgProgram{
+	svc := Service{NetworkID: 4, ServiceID: 101, Type: 1}
+	programs := []Program{
 		{EventID: 0, StartAt: now - 10*time.Minute.Milliseconds(), Duration: 30 * time.Minute.Milliseconds(), Name: "いま"},
 		{EventID: 1, StartAt: now + time.Hour.Milliseconds(), Duration: time.Hour.Milliseconds(), Name: "次"},
 		{EventID: 2, StartAt: now + 4*24*time.Hour.Milliseconds(), Duration: time.Hour.Milliseconds(), Name: "4 日後"},
 	}
-	secs := serviceEITSections(svc, programs, now)
+	secs := ServiceEITSections(svc, programs, now)
 
 	present := map[int]map[byte][]byte{}
 	for _, sec := range secs {
-		if crc32MPEG(sec) != 0 {
+		if CRC32MPEG(sec) != 0 {
 			t.Fatalf("CRC: % x", sec)
 		}
 		if sec[13] != tableLast {
@@ -414,10 +414,10 @@ func TestEITScheduleTableIDs(t *testing.T) {
 		m[sec[6]] = sec
 	}
 	// p/f: 0 がいま、1 が次
-	if sec := present[tablePF][0]; sec == nil || !slices.Equal(eventIDs(sec), []int{0}) {
+	if sec := present[TablePF][0]; sec == nil || !slices.Equal(eventIDs(sec), []int{0}) {
 		t.Fatalf("p/f 0: %v", eventIDs(sec))
 	}
-	if sec := present[tablePF][1]; sec == nil || !slices.Equal(eventIDs(sec), []int{1}) {
+	if sec := present[TablePF][1]; sec == nil || !slices.Equal(eventIDs(sec), []int{1}) {
 		t.Fatalf("p/f 1: %v", eventIDs(sec))
 	}
 	// 12:00 はその日の 4 番目のセグメント。0x50 は 32、0x51 は 0 から
@@ -454,17 +454,17 @@ func TestEITScheduleTableIDs(t *testing.T) {
 func TestEITLastSectionNumber(t *testing.T) {
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
 	start := jstMidnight(now) + 31*segmentSpanMS // 最終セグメント (3 日後の 21:00)
-	var programs []epgProgram
+	var programs []Program
 	for i := 0; i < 40; i++ {
-		programs = append(programs, epgProgram{
+		programs = append(programs, Program{
 			EventID: i, StartAt: start + int64(i)*4*time.Minute.Milliseconds(),
 			Duration: time.Minute.Milliseconds(), Name: strings.Repeat("あ", 100),
 		})
 	}
 	var numbers []byte
 	var last []byte
-	for _, sec := range serviceEITSections(epgService{NetworkID: 4, ServiceID: 101}, programs, now) {
-		if sec[0] == tableSchedule {
+	for _, sec := range ServiceEITSections(Service{NetworkID: 4, ServiceID: 101}, programs, now) {
+		if sec[0] == TableSchedule {
 			numbers = append(numbers, sec[6])
 			last = append(last, sec[7])
 		}
@@ -480,23 +480,23 @@ func TestEITLastSectionNumber(t *testing.T) {
 	}
 }
 
-// hasSynthesizablePrograms の判定が、実際に serviceEITSections がイベントを出すかと一致する
+// HasSynthesizablePrograms の判定が、実際に ServiceEITSections がイベントを出すかと一致する
 func TestHasSynthesizablePrograms(t *testing.T) {
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
 	midnight := jstMidnight(now)
 	hour := time.Hour.Milliseconds()
 	day := 24 * hour
-	one := func(eventID int, start, duration int64) []epgProgram {
-		return []epgProgram{{EventID: eventID, StartAt: start, Duration: duration}}
+	one := func(eventID int, start, duration int64) []Program {
+		return []Program{{EventID: eventID, StartAt: start, Duration: duration}}
 	}
 	cases := []struct {
 		name     string
-		programs []epgProgram
+		programs []Program
 		want     bool
 	}{
 		{"空", nil, false},
 		{"過去のみ", one(1, now-2*hour, hour), false},
-		{"不正値のみ", []epgProgram{{EventID: 1}, {EventID: 2, StartAt: now, Duration: 0}}, false},
+		{"不正値のみ", []Program{{EventID: 1}, {EventID: 2, StartAt: now, Duration: 0}}, false},
 		{"8 日超のみ", one(1, midnight+9*day, hour), false},
 		{"前のセグメントに始まって放送中", one(1, now-2*hour, 4*hour), true},
 		{"いま開始", one(1, now, hour), true},
@@ -507,9 +507,9 @@ func TestHasSynthesizablePrograms(t *testing.T) {
 		{"過去と未来", append(one(1, now-2*hour, hour), one(2, now+hour, hour)...), true},
 	}
 	for _, c := range cases {
-		got := hasSynthesizablePrograms(c.programs, now)
+		got := HasSynthesizablePrograms(c.programs, now)
 		events := 0
-		for _, sec := range serviceEITSections(epgService{NetworkID: 4, ServiceID: 101}, c.programs, now) {
+		for _, sec := range ServiceEITSections(Service{NetworkID: 4, ServiceID: 101}, c.programs, now) {
 			events += len(eventIDs(sec))
 		}
 		if got != c.want || got != (events > 0) {
@@ -535,20 +535,20 @@ func eventIDs(section []byte) []int {
 func TestEITSectionSplit(t *testing.T) {
 	// 1 セグメントに入りきらない件数でも、セクションを分けて全部載せる
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.FixedZone("JST", 9*3600)).UnixMilli()
-	var programs []epgProgram
+	var programs []Program
 	for i := 0; i < 20; i++ {
-		programs = append(programs, epgProgram{
+		programs = append(programs, Program{
 			EventID: i, StartAt: now + int64(i)*time.Minute.Milliseconds(),
 			Duration: time.Minute.Milliseconds(), Name: strings.Repeat("あ", 100),
 		})
 	}
-	secs := serviceEITSections(epgService{NetworkID: 4, ServiceID: 101}, programs, now)
+	secs := ServiceEITSections(Service{NetworkID: 4, ServiceID: 101}, programs, now)
 	var got []int
 	for _, sec := range secs {
-		if sec[0] != tableSchedule {
+		if sec[0] != TableSchedule {
 			continue
 		}
-		if crc32MPEG(sec) != 0 || len(sec) > 4096 {
+		if CRC32MPEG(sec) != 0 || len(sec) > 4096 {
 			t.Fatalf("section: %d", len(sec))
 		}
 		got = append(got, eventIDs(sec)...)
@@ -559,18 +559,18 @@ func TestEITSectionSplit(t *testing.T) {
 }
 
 func TestTSWriter(t *testing.T) {
-	w := newTSWriter()
+	w := NewTSWriter()
 	section := make([]byte, 400)
 	for i := range section {
 		section[i] = byte(i)
 	}
-	packets := w.section(pidEIT, section)
+	packets := w.Section(PIDEIT, section)
 	if len(packets) != 3*188 {
 		t.Fatalf("packets: %d", len(packets))
 	}
 	for i := 0; i < 3; i++ {
 		p := packets[i*188 : (i+1)*188]
-		if p[0] != 0x47 || int(p[1]&0x1f)<<8|int(p[2]) != pidEIT {
+		if p[0] != 0x47 || int(p[1]&0x1f)<<8|int(p[2]) != PIDEIT {
 			t.Fatalf("%d: header % x", i, p[:4])
 		}
 		if (i == 0) != (p[1]&0x40 != 0) {
@@ -589,7 +589,7 @@ func TestTSWriter(t *testing.T) {
 		t.Fatalf("padding: %02x", last)
 	}
 	// 続きのパケットは同じ PID の続きの番号から
-	next := w.section(pidEIT, section[:10])
+	next := w.Section(PIDEIT, section[:10])
 	if next[3]&0x0f != 3 {
 		t.Fatalf("continuity: %02x", next[3])
 	}

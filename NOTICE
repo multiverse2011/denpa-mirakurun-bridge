@@ -3,20 +3,20 @@ denpa-mirakurun-bridge の文字の対応表について
 
 このリポジトリには、次の表から生成したデータを含みます。
 
-jis0208.go
-----------
+internal/arib/jis0208.go
+------------------------
 出典: WHATWG Encoding Standard の EUC-JP の索引
   https://encoding.spec.whatwg.org/#euc-jp
 
-本リポジトリの jis0208.go は、この EUC-JP の索引を Node.js の
+本リポジトリの internal/arib/jis0208.go は、この EUC-JP の索引を Node.js の
 TextDecoder('euc-jp') で逆引きして生成し、ARIB の区点の表に合わせて改変したものです。
 
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 This work is licensed under a Creative Commons Attribution 4.0 International
 License: https://creativecommons.org/licenses/by/4.0/
 
-aribextra.go
-------------
+internal/arib/aribextra.go
+--------------------------
 出典: denpa v2.51.0 の packages/arib/src/b24-tables.ts と aribtext.ts
   https://github.com/danything/denpa
 

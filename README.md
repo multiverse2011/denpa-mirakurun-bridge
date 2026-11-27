@@ -82,4 +82,4 @@ go test -race ./...
 ただし [tls.go](tls.go) は denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移植したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
 このファイルを改変して配布する場合は、そのファイルを MPL-2.0 で公開してください。
 
-[jis0208.go](jis0208.go) と [aribextra.go](aribextra.go) の文字の対応表は、WHATWG Encoding Standard と denpa / libaribcaption の表から生成したものです。出典とライセンスの文面は [NOTICE](NOTICE) にまとめています。
+[internal/arib/jis0208.go](internal/arib/jis0208.go) と [internal/arib/aribextra.go](internal/arib/aribextra.go) の文字の対応表は、WHATWG Encoding Standard と denpa / libaribcaption の表から生成したものです。出典とライセンスの文面は [NOTICE](NOTICE) にまとめています。

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/arib"
 )
 
 func TestParseEPGMode(t *testing.T) {
@@ -28,7 +30,7 @@ func TestParseEPGMode(t *testing.T) {
 
 func TestEPGServicesFor(t *testing.T) {
 	// 地上波はその中継の中だけ
-	ids := func(services []epgService) []int {
+	ids := func(services []arib.Service) []int {
 		var out []int
 		for _, s := range services {
 			out = append(out, s.ServiceID)
@@ -90,6 +92,20 @@ func tsSections(t *testing.T, data []byte, pid int) [][]byte {
 	return out
 }
 
+// eventIDs は EIT セクションの番組番号
+func eventIDs(section []byte) []int {
+	if section == nil {
+		return nil
+	}
+	var ids []int
+	for at := 14; at+12 <= len(section)-4; {
+		ids = append(ids, int(section[at])<<8|int(section[at+1]))
+		desc := int(section[at+10]&0x0f)<<8 | int(section[at+11])
+		at += 12 + desc
+	}
+	return ids
+}
+
 func getEPG(t *testing.T, base string, query map[string]string) (int, []byte) {
 	t.Helper()
 	v := url.Values{}
@@ -112,7 +128,7 @@ func getEPG(t *testing.T, base string, query map[string]string) (int, []byte) {
 func TestSyntheticEPGLogsWhenStreaming(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{{
+	e.mk.programs = []arib.Program{{
 		EventID: 1, ServiceID: 1024, NetworkID: 32736,
 		StartAt: time.Now().UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組",
 	}}
@@ -157,8 +173,8 @@ func sdtServicesOf(t *testing.T, data []byte) (map[int]sdtServiceInfo, int) {
 	t.Helper()
 	out := map[int]sdtServiceInfo{}
 	tsid := -1
-	for _, sec := range tsSections(t, data, pidSDT) {
-		if sec[0] != tableSDT {
+	for _, sec := range tsSections(t, data, arib.PIDSDT) {
+		if sec[0] != arib.TableSDT {
 			continue
 		}
 		tsid = int(sec[3])<<8 | int(sec[4])
@@ -189,7 +205,7 @@ func TestSyntheticSDTAddsStoredGroundServices(t *testing.T) {
 		]}]}`)
 	now := time.Now()
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+	e.mk.programs = []arib.Program{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
 		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
 	e.mk.mu.Unlock()
 
@@ -214,7 +230,7 @@ func TestSyntheticSDTAddsStoredGroundServices(t *testing.T) {
 		t.Fatal("Mirakurun の局が SDT にありません")
 	}
 	// 足した局は EIT を持たず、EIT の TSID は Mirakurun の networkId のまま (PAT/SDT とは別)
-	for _, sec := range tsSections(t, body, pidEIT) {
+	for _, sec := range tsSections(t, body, arib.PIDEIT) {
 		if id := int(sec[3])<<8 | int(sec[4]); id == 25017 || id == 25019 {
 			t.Fatalf("足した局 %d の EIT があります", id)
 		}
@@ -233,7 +249,7 @@ func TestSyntheticSDTOldStoredWithoutNewFields(t *testing.T) {
 		"services":[{"serviceId":1024},{"serviceId":25017}]}]}`)
 	now := time.Now()
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+	e.mk.programs = []arib.Program{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
 		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
 	e.mk.mu.Unlock()
 
@@ -258,7 +274,7 @@ func TestSyntheticSDTLeavesSatellite(t *testing.T) {
 		"services":[{"serviceId":101,"serviceType":1,"name":"BS一"},{"serviceId":999,"serviceType":1,"name":"足さない局"}]}]}`)
 	now := time.Now()
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 101, NetworkID: 4,
+	e.mk.programs = []arib.Program{{EventID: 1, ServiceID: 101, NetworkID: 4,
 		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
 	e.mk.mu.Unlock()
 
@@ -279,7 +295,7 @@ func TestSyntheticSDTWithoutStoredChannels(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	now := time.Now()
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
+	e.mk.programs = []arib.Program{{EventID: 1, ServiceID: 1024, NetworkID: 32736,
 		StartAt: now.UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "番組"}}
 	e.mk.mu.Unlock()
 
@@ -300,11 +316,11 @@ func TestSyntheticEPG(t *testing.T) {
 	e := setup(t, oneGR, channels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	now := time.Now()
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{
+	e.mk.programs = []arib.Program{
 		{EventID: 100, ServiceID: 1024, NetworkID: 32736, StartAt: now.Add(-10 * time.Minute).UnixMilli(), Duration: 30 * time.Minute.Milliseconds(),
 			IsFree: true, Name: "番組A", Description: "説明", Extended: map[string]string{"出演者": "太郎"},
-			Genres: []epgGenre{{Lv1: 7, Lv2: 1}}, Video: &epgVideo{StreamContent: 1, ComponentType: 0xb3},
-			Audios: []epgAudio{{ComponentType: 3, ComponentTag: 0x11, IsMain: true, SamplingRate: 48000, Langs: []string{"jpn"}}}},
+			Genres: []arib.Genre{{Lv1: 7, Lv2: 1}}, Video: &arib.Video{StreamContent: 1, ComponentType: 0xb3},
+			Audios: []arib.Audio{{ComponentType: 3, ComponentTag: 0x11, IsMain: true, SamplingRate: 48000, Langs: []string{"jpn"}}}},
 		{EventID: 101, ServiceID: 1024, NetworkID: 32736, StartAt: now.Add(20 * time.Minute).UnixMilli(), Duration: time.Hour.Milliseconds(), IsFree: true, Name: "番組B"},
 		{EventID: 102, ServiceID: 1024, NetworkID: 32736, StartAt: now.Add(24 * time.Hour).UnixMilli(), Duration: time.Hour.Milliseconds(), IsFree: true, Name: "番組C"},
 		{EventID: 200, ServiceID: 1056, NetworkID: 32737, StartAt: now.Add(time.Hour).UnixMilli(), Duration: time.Hour.Milliseconds(), Name: "別の局"},
@@ -321,8 +337,8 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 
 	// PAT: 1024 番
-	pat := tsSections(t, body, pidPAT)
-	if len(pat) == 0 || crc32MPEG(pat[0]) != 0 {
+	pat := tsSections(t, body, arib.PIDPAT)
+	if len(pat) == 0 || arib.CRC32MPEG(pat[0]) != 0 {
 		t.Fatal("PAT がありません")
 	}
 	foundService := false
@@ -336,8 +352,8 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 
 	// SDT: service_type 1
-	sdt := tsSections(t, body, pidSDT)
-	if len(sdt) == 0 || crc32MPEG(sdt[0]) != 0 {
+	sdt := tsSections(t, body, arib.PIDSDT)
+	if len(sdt) == 0 || arib.CRC32MPEG(sdt[0]) != 0 {
 		t.Fatal("SDT がありません")
 	}
 	foundType := false
@@ -355,11 +371,11 @@ func TestSyntheticEPG(t *testing.T) {
 	}
 
 	// EIT: p/f と schedule、対象の局の番組だけ
-	eits := tsSections(t, body, pidEIT)
+	eits := tsSections(t, body, arib.PIDEIT)
 	tables := map[byte]map[byte]bool{}
 	ids := map[int]bool{}
 	for _, sec := range eits {
-		if crc32MPEG(sec) != 0 {
+		if arib.CRC32MPEG(sec) != 0 {
 			t.Fatalf("EIT の CRC が合いません: % x", sec[:4])
 		}
 		if tables[sec[0]] == nil {
@@ -370,10 +386,10 @@ func TestSyntheticEPG(t *testing.T) {
 			ids[id] = true
 		}
 	}
-	if !tables[tablePF][0] || !tables[tablePF][1] {
-		t.Fatalf("p/f がありません: %v", tables[tablePF])
+	if !tables[arib.TablePF][0] || !tables[arib.TablePF][1] {
+		t.Fatalf("p/f がありません: %v", tables[arib.TablePF])
 	}
-	if len(tables[tableSchedule]) == 0 || len(tables[tableSchedule+1]) == 0 {
+	if len(tables[arib.TableSchedule]) == 0 || len(tables[arib.TableSchedule+1]) == 0 {
 		t.Fatalf("schedule がありません: %v", tables)
 	}
 	for _, id := range []int{100, 101, 102} {
@@ -440,7 +456,7 @@ func TestEPGProgramsKeepsNewerSnapshot(t *testing.T) {
 	e.mk.mu.Lock()
 	e.mk.programsStart = started
 	e.mk.programsRelease = release
-	e.mk.programSets = [][]epgProgram{{{EventID: 1}}, {{EventID: 2}}}
+	e.mk.programSets = [][]arib.Program{{{EventID: 1}}, {{EventID: 2}}}
 	e.mk.mu.Unlock()
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
@@ -520,7 +536,7 @@ func TestEPGProgramsIgnoresCallerCancel(t *testing.T) {
 func TestSyntheticEPGFallsBackWithoutPrograms(t *testing.T) {
 	e := setup(t, oneGR, grChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	e.mk.mu.Lock()
-	e.mk.programs = []epgProgram{}
+	e.mk.programs = []arib.Program{}
 	e.mk.mu.Unlock()
 	o := open(t, e.base, q("GR", "T27", "3", "epg T27"))
 	if o.status != 200 {
