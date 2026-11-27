@@ -1,7 +1,8 @@
-package main
-
+// Package arib は ARIB の文字符号化と PSI/SI (PAT・SDT・EIT) の組み立て、TS パケット化を受け持つ。
+//
 // EPG_MODE=synthetic で、Mirakurun の番組表 (/api/programs) から EIT・PAT・SDT を組み立て、
 // チューナーを使わずに use=epg へ返すための符号化。ARIB STD-B10/B24 の必要な部分だけを書いている。
+package arib
 
 import (
 	"encoding/binary"
@@ -11,14 +12,20 @@ import (
 
 // 合成する TS の PID と table_id
 const (
-	pidPAT = 0x0000
-	pidSDT = 0x0011
-	pidEIT = 0x0012
+	// PIDPAT は PAT の PID
+	PIDPAT = 0x0000
+	// PIDSDT は SDT の PID
+	PIDSDT = 0x0011
+	// PIDEIT は EIT の PID
+	PIDEIT = 0x0012
 
-	tablePF       = 0x4e
-	tableSchedule = 0x50 // 0x50〜0x51 の 2 本で 8 日ぶん (1 本 = 32 セグメント = 4 日)
-	tableLast     = tableSchedule + 1
-	tableSDT      = 0x42
+	// TablePF は EIT の p/f (自 TS の現在と次) の table_id
+	TablePF = 0x4e
+	// TableSchedule は EIT の schedule (自 TS) の最初の table_id
+	TableSchedule = 0x50 // 0x50〜0x51 の 2 本で 8 日ぶん (1 本 = 32 セグメント = 4 日)
+	tableLast     = TableSchedule + 1
+	// TableSDT は SDT (自 TS) の table_id
+	TableSDT = 0x42
 
 	// 1 つの table_id が持つセグメント (3 時間) の数。denpa の ScheduleProgress と同じ数え方
 	segmentsPerTable = 32
@@ -31,8 +38,8 @@ const (
 	descriptorBudget = 3000
 )
 
-// epgProgram は Mirakurun の /api/programs から使う項目だけ
-type epgProgram struct {
+// Program は Mirakurun の /api/programs から使う項目だけ
+type Program struct {
 	EventID     int               `json:"eventId"`
 	ServiceID   int               `json:"serviceId"`
 	NetworkID   int               `json:"networkId"`
@@ -42,24 +49,27 @@ type epgProgram struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Extended    map[string]string `json:"extended"`
-	Genres      []epgGenre        `json:"genres"`
-	Video       *epgVideo         `json:"video"`
-	Audios      []epgAudio        `json:"audios"`
+	Genres      []Genre           `json:"genres"`
+	Video       *Video            `json:"video"`
+	Audios      []Audio           `json:"audios"`
 }
 
-type epgGenre struct {
+// Genre は番組のジャンル (content_descriptor の 1 項目)
+type Genre struct {
 	Lv1 int `json:"lv1"`
 	Lv2 int `json:"lv2"`
 	Un1 int `json:"un1"`
 	Un2 int `json:"un2"`
 }
 
-type epgVideo struct {
+// Video は番組の映像の component
+type Video struct {
 	StreamContent int `json:"streamContent"`
 	ComponentType int `json:"componentType"`
 }
 
-type epgAudio struct {
+// Audio は番組の音声の component
+type Audio struct {
 	ComponentType int      `json:"componentType"`
 	ComponentTag  int      `json:"componentTag"`
 	IsMain        bool     `json:"isMain"`
@@ -67,8 +77,8 @@ type epgAudio struct {
 	Langs         []string `json:"langs"`
 }
 
-// epgService は合成する TS に載せる局
-type epgService struct {
+// Service は合成する TS に載せる局
+type Service struct {
 	NetworkID int
 	ServiceID int
 	Type      int
@@ -305,7 +315,7 @@ func extendedEventDescriptors(extended map[string]string) [][]byte {
 }
 
 // contentDescriptor はジャンル (大分類・中分類)
-func contentDescriptor(genres []epgGenre) []byte {
+func contentDescriptor(genres []Genre) []byte {
 	var body []byte
 	for _, g := range genres {
 		if len(body)+2 > 254 {
@@ -349,7 +359,7 @@ func lang3(langs []string, i int) string {
 }
 
 // audioDescriptors は音声の一覧
-func audioDescriptors(audios []epgAudio) []byte {
+func audioDescriptors(audios []Audio) []byte {
 	var out []byte
 	for i, a := range audios {
 		if i >= 8 {
@@ -379,7 +389,7 @@ func audioDescriptors(audios []epgAudio) []byte {
 }
 
 // eitEventBytes は EIT の event 1 つ (見出し + 記述子)
-func eitEventBytes(p epgProgram, runningStatus int) []byte {
+func eitEventBytes(p Program, runningStatus int) []byte {
 	var d []byte
 	add := func(b []byte) {
 		if len(d)+len(b) <= descriptorBudget {
@@ -456,8 +466,8 @@ var crcTable = func() [256]uint32 {
 	return t
 }()
 
-// crc32MPEG は MPEG-2 の CRC32。CRC を含めて回すと 0 になる
-func crc32MPEG(data []byte) uint32 {
+// CRC32MPEG は MPEG-2 の CRC32。CRC を含めて回すと 0 になる
+func CRC32MPEG(data []byte) uint32 {
 	crc := uint32(0xffffffff)
 	for _, b := range data {
 		crc = crc<<8 ^ crcTable[byte(crc>>24)^b]
@@ -472,7 +482,7 @@ func withCRC(body []byte) []byte {
 	body[2] = byte(length)
 	out := make([]byte, len(body)+4)
 	copy(out, body)
-	binary.BigEndian.PutUint32(out[len(body):], crc32MPEG(out[:len(body)]))
+	binary.BigEndian.PutUint32(out[len(body):], CRC32MPEG(out[:len(body)]))
 	return out
 }
 
@@ -483,7 +493,8 @@ func psiSection(tableID byte, extension int, section, lastSection byte, rest []b
 	return withCRC(body)
 }
 
-func patSection(tsid int, services []epgService) []byte {
+// PATSection は services を載せた PAT のセクションを組む
+func PATSection(tsid int, services []Service) []byte {
 	var rest []byte
 	for i, s := range services {
 		pmt := 0x1000 + i // denpa は番組表の取得で PMT を読まないので、ぶつからなければよい
@@ -495,7 +506,8 @@ func patSection(tsid int, services []epgService) []byte {
 	return psiSection(0x00, tsid, 0, 0, rest)
 }
 
-func sdtSection(tsid, onid int, services []epgService) []byte {
+// SDTSection は services を載せた SDT (自 TS) のセクションを組む
+func SDTSection(tsid, onid int, services []Service) []byte {
 	rest := []byte{byte(onid >> 8), byte(onid), 0xff}
 	for _, s := range services {
 		name := truncateArib(s.Name, 200)
@@ -509,7 +521,7 @@ func sdtSection(tsid, onid int, services []epgService) []byte {
 		}
 		rest = append(rest, entry...)
 	}
-	return psiSection(tableSDT, tsid, 0, 0, rest)
+	return psiSection(TableSDT, tsid, 0, 0, rest)
 }
 
 // eitSectionBytes は EIT のセクション 1 本
@@ -527,7 +539,7 @@ func eitSectionBytes(tableID byte, serviceID, tsid, onid int, section, lastSecti
 }
 
 // packEvents は 1 セグメント (3 時間) の番組をセクションの大きさに分ける。空でも 1 本返す
-func packEvents(events []epgProgram, runningStatus int) [][]byte {
+func packEvents(events []Program, runningStatus int) [][]byte {
 	var out [][]byte
 	var cur []byte
 	for _, p := range events {
@@ -555,8 +567,8 @@ func jstMidnight(ms int64) int64 {
 	return (jst/86400*86400 - 9*3600) * 1000
 }
 
-func presentFollowing(programs []epgProgram, now int64) (*epgProgram, *epgProgram) {
-	sorted := make([]epgProgram, 0, len(programs))
+func presentFollowing(programs []Program, now int64) (*Program, *Program) {
+	sorted := make([]Program, 0, len(programs))
 	for _, p := range programs {
 		if p.StartAt > 0 && p.Duration > 0 {
 			sorted = append(sorted, p)
@@ -568,7 +580,7 @@ func presentFollowing(programs []epgProgram, now int64) (*epgProgram, *epgProgra
 		}
 		return sorted[i].EventID < sorted[j].EventID
 	})
-	var present, following *epgProgram
+	var present, following *Program
 	for i := range sorted {
 		p := &sorted[i]
 		if p.StartAt <= now && now < p.StartAt+p.Duration {
@@ -590,9 +602,9 @@ func presentFollowing(programs []epgProgram, now int64) (*epgProgram, *epgProgra
 	return present, following
 }
 
-// hasSynthesizablePrograms は、この局の番組が 1 つでも TS に載るか
+// HasSynthesizablePrograms は、この局の番組が 1 つでも TS に載るか
 // (p/f の「いま」があるか、8 日ぶんの schedule に入る番組があるか)
-func hasSynthesizablePrograms(programs []epgProgram, now int64) bool {
+func HasSynthesizablePrograms(programs []Program, now int64) bool {
 	if present, _ := presentFollowing(programs, now); present != nil {
 		return true
 	}
@@ -609,15 +621,15 @@ func hasSynthesizablePrograms(programs []epgProgram, now int64) bool {
 	return false
 }
 
-// serviceEITSections は 1 局ぶんの EIT を組む。p/f (0x4E) と、いまから 8 日先までの
+// ServiceEITSections は 1 局ぶんの EIT を組む。p/f (0x4E) と、いまから 8 日先までの
 // schedule (0x50・0x51)。来ないセグメントを denpa が待ち続けるので、番組の無いセグメントも
 // 空のセクションを 1 本だけ流す
-func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]byte {
+func ServiceEITSections(svc Service, programs []Program, now int64) [][]byte {
 	midnight := jstMidnight(now)
 	segment := func(at int64) int { return int((at - midnight) / segmentSpanMS) }
 	current := segment(now)
 
-	sorted := make([]epgProgram, 0, len(programs))
+	sorted := make([]Program, 0, len(programs))
 	for _, p := range programs {
 		if p.StartAt > 0 && p.Duration > 0 {
 			sorted = append(sorted, p)
@@ -629,7 +641,7 @@ func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]by
 		}
 		return sorted[i].EventID < sorted[j].EventID
 	})
-	bySegment := map[int][]epgProgram{}
+	bySegment := map[int][]Program{}
 	for _, p := range sorted {
 		s := segment(p.StartAt)
 		if s < current || s >= 2*segmentsPerTable {
@@ -656,7 +668,7 @@ func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]by
 				blobs = blobs[:8]
 			}
 			for j, blob := range blobs {
-				out = append(out, eitSectionBytes(byte(tableSchedule+t), svc.ServiceID, svc.NetworkID, svc.NetworkID,
+				out = append(out, eitSectionBytes(byte(TableSchedule+t), svc.ServiceID, svc.NetworkID, svc.NetworkID,
 					byte(i*8+j), lastSection, byte(i*8+len(blobs)-1), tableLast, [][]byte{blob}))
 			}
 		}
@@ -669,22 +681,25 @@ func serviceEITSections(svc epgService, programs []epgProgram, now int64) [][]by
 		if following != nil {
 			last = 1
 		}
-		out = append(out, eitSectionBytes(tablePF, svc.ServiceID, svc.NetworkID, svc.NetworkID,
+		out = append(out, eitSectionBytes(TablePF, svc.ServiceID, svc.NetworkID, svc.NetworkID,
 			0, last, last, tableLast, [][]byte{eitEventBytes(*present, 4)}))
 		if following != nil {
-			out = append(out, eitSectionBytes(tablePF, svc.ServiceID, svc.NetworkID, svc.NetworkID,
+			out = append(out, eitSectionBytes(TablePF, svc.ServiceID, svc.NetworkID, svc.NetworkID,
 				1, last, last, tableLast, [][]byte{eitEventBytes(*following, 1)}))
 		}
 	}
 	return out
 }
 
-// tsWriter はセクションを 188 バイトのパケットにする。continuity counter は PID ごとに数える
-type tsWriter struct{ cc map[int]byte }
+// TSWriter はセクションを 188 バイトのパケットにする。continuity counter は PID ごとに数える
+// NewTSWriter で作る (ゼロ値は使えない)
+type TSWriter struct{ cc map[int]byte }
 
-func newTSWriter() *tsWriter { return &tsWriter{cc: map[int]byte{}} }
+// NewTSWriter は continuity counter が 0 から始まる TSWriter を返す
+func NewTSWriter() *TSWriter { return &TSWriter{cc: map[int]byte{}} }
 
-func (w *tsWriter) section(pid int, section []byte) []byte {
+// Section は section を pid の TS パケット (188 バイトの倍数) にする
+func (w *TSWriter) Section(pid int, section []byte) []byte {
 	data := append([]byte{0x00}, section...) // pointer_field = 0
 	var out []byte
 	for first := true; len(data) > 0; first = false {

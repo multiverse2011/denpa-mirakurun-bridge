@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/arib"
 )
 
 type Config struct {
@@ -188,7 +190,7 @@ type Bridge struct {
 	logs      []logLine
 
 	epgMu       sync.Mutex // Mirakurun の番組表の控え
-	epgCached   []epgProgram
+	epgCached   []arib.Program
 	epgCachedAt time.Time
 
 	recording atomic.Int32  // 開いている録画の選局 (Mirakurun の応答待ちも数える)

@@ -2,6 +2,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 ARG TARGETOS TARGETARCH TARGETVARIANT VERSION=dev
 WORKDIR /src
 COPY go.mod *.go ./
+COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /bridge . && mkdir /config
 

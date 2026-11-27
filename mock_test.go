@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/arib"
 )
 
 // 偽の Mirakurun。選び方は Tuner._pickTunerDevice() をなぞる
@@ -47,12 +49,12 @@ type mockMirakurun struct {
 	requests      []mockRequest
 	events        []chan struct{}
 	seq           int
-	stall         bool           // 最初の塊のあと何も送らない (チューナーが固まった)
-	burst         bool           // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
-	hang          bool           // 応答ヘッダを返さない (Mirakurun が固まった)
-	programs      []epgProgram   // /api/programs が返す番組表
-	programSets   [][]epgProgram // 取得ごとに返す番組表 (あれば programs より優先)
-	noPrograms    bool           // /api/programs を 404 にする (合成できないときの試験)
+	stall         bool             // 最初の塊のあと何も送らない (チューナーが固まった)
+	burst         bool             // 大きな塊を休まず送る (受け手が読まないとすぐ詰まる)
+	hang          bool             // 応答ヘッダを返さない (Mirakurun が固まった)
+	programs      []arib.Program   // /api/programs が返す番組表
+	programSets   [][]arib.Program // 取得ごとに返す番組表 (あれば programs より優先)
+	noPrograms    bool             // /api/programs を 404 にする (合成できないときの試験)
 	programsDelay time.Duration
 	programsStart chan struct{} // 取得が始まったら 1 つ送る (nil なら送らない)
 	// programsRelease があれば、1 本目の取得はここが閉じるまで返らない (2 本目の到着を待つバリア)
@@ -189,7 +191,7 @@ func (m *mockMirakurun) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if programs == nil {
-			programs = []epgProgram{}
+			programs = []arib.Program{}
 		}
 		send(200, programs)
 		return
