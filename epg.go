@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"denpa-mirakurun-bridge/internal/arib"
+	"denpa-mirakurun-bridge/internal/channels"
 )
 
 // Mirakurun の番組表を取り直す間隔。EPG の取得は数分おきなので、これで足りる
@@ -24,11 +25,11 @@ func isEPGUse(use string) bool {
 // epgServicesFor は denpa の要求チャンネルに載っている局を返す。
 // 地上波は中継 (Mirakurun のチャンネル) の中の局だけ。衛星は denpa がネットワーク全局を
 // 期待するので、同じ networkId の局を全部含める。
-func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []arib.Service {
-	var self *MirakurunChannel
-	for i := range channels {
-		if channels[i].Type == typ && channels[i].Channel == mkChannel {
-			self = &channels[i]
+func epgServicesFor(typ, mkChannel string, mkChannels []channels.Mirakurun) []arib.Service {
+	var self *channels.Mirakurun
+	for i := range mkChannels {
+		if mkChannels[i].Type == typ && mkChannels[i].Channel == mkChannel {
+			self = &mkChannels[i]
 			break
 		}
 	}
@@ -41,7 +42,7 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []arib.S
 	}
 	seen := map[[2]int]bool{}
 	var out []arib.Service
-	add := func(s MirakurunService) {
+	add := func(s channels.MirakurunService) {
 		key := [2]int{s.NetworkID, s.ServiceID}
 		if seen[key] {
 			return
@@ -54,7 +55,7 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []arib.S
 			add(s)
 		}
 	} else {
-		for _, c := range channels {
+		for _, c := range mkChannels {
 			if c.Type != typ {
 				continue
 			}
@@ -80,8 +81,8 @@ func epgServicesFor(typ, mkChannel string, channels []MirakurunChannel) []arib.S
 // (denpa の widenServices が古い channels.json の名前で DB の局名を半角に戻すのを避ける。
 // compareGround は名前を見ない)。
 // 見つかったときは、預かったチャンネルの transportStreamId も返す (0 なら呼び側は今の値を使う)
-func addStoredGroundServices(channel string, services []arib.Service, stored []DenpaChannel) ([]arib.Service, int) {
-	var self *DenpaChannel
+func addStoredGroundServices(channel string, services []arib.Service, stored []channels.Denpa) ([]arib.Service, int) {
+	var self *channels.Denpa
 	for i := range stored {
 		if stored[i].Type == "GR" && stored[i].Channel == channel {
 			self = &stored[i]
@@ -134,7 +135,7 @@ func (b *Bridge) epgPrograms(ctx context.Context) ([]arib.Program, error) {
 // syntheticEPG は use=epg に Mirakurun の番組表から組んだ EIT を返す。
 // チューナーを使わないので、keyless の予算にも /denpa/tuners の users にも載らない。
 // 組めなければ false を返し、呼び側が従来のストリーム中継に落とす
-func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, channel, mkChannel string, mkChannels []MirakurunChannel) bool {
+func (b *Bridge) syntheticEPG(w http.ResponseWriter, r *http.Request, typ, channel, mkChannel string, mkChannels []channels.Mirakurun) bool {
 	services := epgServicesFor(typ, mkChannel, mkChannels)
 	if len(services) == 0 {
 		b.logf("cannot synthesize EPG for %s %s: Mirakurun has no services for the channel", "%s %s の番組表を合成できません: Mirakurun にこのチャンネルの局がありません", typ, channel)

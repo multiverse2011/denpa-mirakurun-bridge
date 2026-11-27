@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"denpa-mirakurun-bridge/internal/arib"
+	"denpa-mirakurun-bridge/internal/channels"
 )
 
 func TestParseEPGMode(t *testing.T) {
@@ -41,17 +42,17 @@ func TestEPGServicesFor(t *testing.T) {
 		t.Fatalf("GR: %v", got)
 	}
 	// 衛星は同じ networkId の全局
-	channels := []MirakurunChannel{
+	mkChannels := []channels.Mirakurun{
 		{Type: "BS", Channel: "BS15_0", Services: services(4, 101)},
 		{Type: "BS", Channel: "BS15_1", Services: services(4, 103)},
 		{Type: "BS", Channel: "BS03_0", Services: services(4, 151)},
 		{Type: "BS", Channel: "BS01_0", Services: services(5, 191)},
 		{Type: "CS", Channel: "CS2", Services: services(6, 296)},
 	}
-	if got := ids(epgServicesFor("BS", "BS15_0", channels)); !slices.Equal(got, []int{101, 103, 151}) {
+	if got := ids(epgServicesFor("BS", "BS15_0", mkChannels)); !slices.Equal(got, []int{101, 103, 151}) {
 		t.Fatalf("BS: %v", got)
 	}
-	if got := ids(epgServicesFor("BS", "T99", channels)); len(got) != 0 {
+	if got := ids(epgServicesFor("BS", "T99", mkChannels)); len(got) != 0 {
 		t.Fatalf("見つからないチャンネル: %v", got)
 	}
 }
@@ -310,10 +311,10 @@ func TestSyntheticSDTWithoutStoredChannels(t *testing.T) {
 }
 
 func TestSyntheticEPG(t *testing.T) {
-	channels := []MirakurunChannel{
-		{Type: "GR", Channel: "27", Services: []MirakurunService{{ServiceID: 1024, NetworkID: 32736, Type: 1, Name: "サービスA"}}},
+	mkChannels := []channels.Mirakurun{
+		{Type: "GR", Channel: "27", Services: []channels.MirakurunService{{ServiceID: 1024, NetworkID: 32736, Type: 1, Name: "サービスA"}}},
 	}
-	e := setup(t, oneGR, channels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	e := setup(t, oneGR, mkChannels, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	now := time.Now()
 	e.mk.mu.Lock()
 	e.mk.programs = []arib.Program{
@@ -565,7 +566,7 @@ func TestSyntheticModeLeavesLiveRecScan(t *testing.T) {
 
 // 局の情報が引けなければ、番組表も従来のストリーム中継に落ちる
 func TestSyntheticEPGFallsBackWithoutServices(t *testing.T) {
-	e := setup(t, oneGR, []MirakurunChannel{{Type: "GR", Channel: "27"}}, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
+	e := setup(t, oneGR, []channels.Mirakurun{{Type: "GR", Channel: "27"}}, "", 9, func(b *Bridge) { b.cfg.EPGMode = "synthetic" })
 	o := open(t, e.base, q("GR", "T27", "3", "epg T27"))
 	if o.status != 200 {
 		t.Fatal(o.status)

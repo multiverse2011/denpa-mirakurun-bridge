@@ -1,12 +1,13 @@
-package main
+// Package channels は denpa のチャンネル名と Mirakurun のチャンネル名を対応付ける。
+package channels
 
 import (
 	"regexp"
 	"strconv"
 )
 
-// DenpaChannel は denpa が PUT /denpa/channels で預ける局のうち、対応付けに使う項目。
-type DenpaChannel struct {
+// Denpa は denpa が PUT /denpa/channels で預ける局のうち、対応付けに使う項目。
+type Denpa struct {
 	Type              string `json:"type"`
 	Channel           string `json:"channel"`
 	NetworkID         int    `json:"networkId"`
@@ -18,6 +19,7 @@ type DenpaChannel struct {
 	} `json:"services"`
 }
 
+// MirakurunService は Mirakurun の /api/channels が返すチャンネルの局
 type MirakurunService struct {
 	ServiceID int    `json:"serviceId"`
 	NetworkID int    `json:"networkId"`
@@ -25,7 +27,8 @@ type MirakurunService struct {
 	Name      string `json:"name"`
 }
 
-type MirakurunChannel struct {
+// Mirakurun は Mirakurun の /api/channels が返すチャンネル
+type Mirakurun struct {
 	Type     string             `json:"type"`
 	Channel  string             `json:"channel"`
 	Services []MirakurunService `json:"services"`
@@ -38,7 +41,7 @@ var (
 	reTransponder = regexp.MustCompile(`(?i)^(?:BS|CS)?0*(\d+)(?:\D|$)`)
 )
 
-func sameStream(d DenpaChannel, m MirakurunChannel) bool {
+func sameStream(d Denpa, m Mirakurun) bool {
 	if d.Type != m.Type {
 		return false
 	}
@@ -67,7 +70,7 @@ func number(s string) int {
 }
 
 // grByName は預かった局が無いときの従来の引き方 (T<番号> は数字のチャンネル、無ければ完全一致)
-func grByName(name string, ofType []MirakurunChannel, exact func() string) string {
+func grByName(name string, ofType []Mirakurun, exact func() string) string {
 	if m := reUHF.FindStringSubmatch(name); m != nil {
 		for _, c := range ofType {
 			if reDigits.MatchString(c.Channel) && number(c.Channel) == number(m[1]) {
@@ -78,15 +81,15 @@ func grByName(name string, ofType []MirakurunChannel, exact func() string) strin
 	return exact()
 }
 
-// toMirakurun は denpa のチャンネル名を Mirakurun のチャンネル名に引く。無ければ ""。
+// ToMirakurun は denpa のチャンネル名を Mirakurun のチャンネル名に引く。無ければ ""。
 // 地上波は、預かった局と services (networkId と serviceId) のいずれかが一致するチャンネルを選ぶ。
 // 頼まれた番号 (T27→27) または名前の完全一致を「指定どおり」とし、指定どおりの中継局が
 // 別の局になっていれば断る。指定どおりのチャンネルの services が空なら、そのチャンネルを選ぶ。
 // 指定どおりが無ければ同じ局の別の中継局 (複数なら Mirakurun の並び順で先頭) を選ぶ。
 // 預かった局が無い (または services が空) ときは、番号、無ければ名前の完全一致で引く。
 // 衛星は Mirakurun が TSID を出さないので、預かった局のサービスで引く。
-func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel) string {
-	var ofType []MirakurunChannel
+func ToMirakurun(typ, name string, stored []Denpa, mk []Mirakurun) string {
+	var ofType []Mirakurun
 	for _, c := range mk {
 		if c.Type == typ {
 			ofType = append(ofType, c)
@@ -103,7 +106,7 @@ func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel)
 
 	if typ == "GR" {
 		// 預かった同じ名前の局 (services のあるもの) を探す
-		var want *DenpaChannel
+		var want *Denpa
 		for i := range stored {
 			if stored[i].Type == "GR" && stored[i].Channel == name && len(stored[i].Services) > 0 {
 				want = &stored[i]
@@ -114,7 +117,7 @@ func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel)
 			return grByName(name, ofType, exact)
 		}
 		// 「指定どおり」の Mirakurun のチャンネル: 番号一致 (T27→27) と名前の完全一致 (C13)
-		var specified []MirakurunChannel
+		var specified []Mirakurun
 		seen := map[string]bool{}
 		if m := reUHF.FindStringSubmatch(name); m != nil {
 			for _, c := range ofType {
@@ -182,11 +185,11 @@ func toMirakurun(typ, name string, stored []DenpaChannel, mk []MirakurunChannel)
 	return ""
 }
 
-// toDenpa は Mirakurun のチャンネル名を denpa のチャンネル名に引く。
+// ToDenpa は Mirakurun のチャンネル名を denpa のチャンネル名に引く。
 // 地上波は同じ局の denpa チャンネルを先に返し、複数あれば番号が一致するものを優先する
-func toDenpa(typ, mkName string, stored []DenpaChannel, mk []MirakurunChannel) string {
+func ToDenpa(typ, mkName string, stored []Denpa, mk []Mirakurun) string {
 	if typ == "GR" {
-		var target *MirakurunChannel
+		var target *Mirakurun
 		for i := range mk {
 			if mk[i].Type == "GR" && mk[i].Channel == mkName {
 				target = &mk[i]
@@ -194,7 +197,7 @@ func toDenpa(typ, mkName string, stored []DenpaChannel, mk []MirakurunChannel) s
 			}
 		}
 		if target != nil {
-			var matched []DenpaChannel
+			var matched []Denpa
 			for _, d := range stored {
 				if d.Type == "GR" && sameStream(d, *target) {
 					matched = append(matched, d)

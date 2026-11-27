@@ -79,7 +79,7 @@ go test -race ./...
 
 [Apache License 2.0](LICENSE)
 
-ただし [tls.go](tls.go) は denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移植したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
+ただし [internal/pairing/pairing.go](internal/pairing/pairing.go)・[internal/atomicfile/private.go](internal/atomicfile/private.go)・[pair.go](pair.go) は denpa のチューナーエージェント (`agent/Denpa.Agent/AgentTls.cs`) から移植したため、元と同じ [MPL-2.0](https://mozilla.org/MPL/2.0/) です。
 このファイルを改変して配布する場合は、そのファイルを MPL-2.0 で公開してください。
 
 [internal/arib/jis0208.go](internal/arib/jis0208.go) と [internal/arib/aribextra.go](internal/arib/aribextra.go) の文字の対応表は、WHATWG Encoding Standard と denpa / libaribcaption の表から生成したものです。出典とライセンスの文面は [NOTICE](NOTICE) にまとめています。

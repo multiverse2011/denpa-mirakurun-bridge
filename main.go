@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/pairing"
 )
 
 var version = "dev"
@@ -77,11 +79,11 @@ func run() error {
 		allowed = strings.Split(v, ",")
 	}
 	// 既定は TLS (denpa v2.28.0 以降)。AGENT_TLS=0 で v2.27.0 以前の denpa 向けの平文 HTTP
-	var pairing *Pairing
+	var pair *pairing.Pairing
 	switch env("AGENT_TLS", "1") {
 	case "1":
 		dir := filepath.Join(filepath.Dir(env("CHANNELS_FILE", "data/channels.json")), "tls")
-		if pairing, err = LoadPairing(dir, os.Getenv("AGENT_PAIR_TOKEN")); err != nil {
+		if pair, err = pairing.Load(dir, os.Getenv("AGENT_PAIR_TOKEN")); err != nil {
 			return fmt.Errorf("%s: %w", dir, err)
 		}
 	case "0":
@@ -100,7 +102,7 @@ func run() error {
 		EPGMode:       epgMode,
 		DecodeKeyless: decodeKeyless,
 		English:       msg.en,
-		Pairing:       pairing,
+		Pairing:       pair,
 	})
 	if err != nil {
 		return err
@@ -139,12 +141,12 @@ func run() error {
 	}()
 	b.logf("listening on %s → Mirakurun %s (stand-in card %s)", "%s で待ち受けます (Mirakurun: %s、仮のカード: %s)", addr, mirakurun, b.cardID)
 	serve := srv.ListenAndServe
-	if pairing != nil {
-		srv.TLSConfig = pairing.TLSConfig()
+	if pair != nil {
+		srv.TLSConfig = pair.TLSConfig()
 		serve = func() error { return srv.ListenAndServeTLS("", "") }
 		// 合言葉は標準出力にだけ出す (denpa が読む /denpa/logs には載せない)
 		host, _ := os.Hostname()
-		if url, unpaired := pairing.PairURL(host, port); unpaired {
+		if url, unpaired := pair.PairURL(host, port); unpaired {
 			fmt.Println(msg.t("[bridge] URL for pairing with denpa (TUNER_AGENT_URL): %s", "[bridge] denpa と組むときの URL (TUNER_AGENT_URL): %s", url))
 		}
 	}

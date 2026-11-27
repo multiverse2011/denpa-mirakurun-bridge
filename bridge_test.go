@@ -16,22 +16,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"denpa-mirakurun-bridge/internal/channels"
 )
 
-func services(networkID int, ids ...int) []MirakurunService {
-	var out []MirakurunService
+func services(networkID int, ids ...int) []channels.MirakurunService {
+	var out []channels.MirakurunService
 	for _, id := range ids {
-		out = append(out, MirakurunService{ServiceID: id, NetworkID: networkID, Type: 1})
+		out = append(out, channels.MirakurunService{ServiceID: id, NetworkID: networkID, Type: 1})
 	}
 	return out
 }
 
 var (
-	grChannels = []MirakurunChannel{
+	grChannels = []channels.Mirakurun{
 		{Type: "GR", Channel: "27", Services: services(32736, 1024)},
 		{Type: "GR", Channel: "21", Services: services(32737, 1056)},
 	}
-	bsChannels = []MirakurunChannel{
+	bsChannels = []channels.Mirakurun{
 		{Type: "BS", Channel: "BS15_0", Services: services(4, 101)},
 		{Type: "BS", Channel: "BS15_1", Services: services(4, 103)},
 	}
@@ -46,9 +48,9 @@ type testEnv struct {
 }
 
 // tweak は Bridge が動き出す前に時間などを縮める
-func setup(t *testing.T, tuners [][]string, channels []MirakurunChannel, priorityMap string, keylessTuners int, tweak ...func(*Bridge)) testEnv {
+func setup(t *testing.T, tuners [][]string, mkChannels []channels.Mirakurun, priorityMap string, keylessTuners int, tweak ...func(*Bridge)) testEnv {
 	t.Helper()
-	mk := newMock(tuners, channels)
+	mk := newMock(tuners, mkChannels)
 	t.Cleanup(mk.Close)
 	pm, err := parsePriorityMap(priorityMap, messages{})
 	if err != nil {
@@ -629,8 +631,8 @@ func TestPreemptedUserCannotRetake(t *testing.T) {
 }
 
 func TestKeylessLimitSharesSatelliteTuners(t *testing.T) {
-	channels := append(slices.Clone(bsChannels), MirakurunChannel{Type: "CS", Channel: "CS2", Services: services(6, 296)})
-	e := setup(t, [][]string{{"BS", "CS"}, {"BS", "CS"}}, channels, "", 1)
+	mkChannels := append(slices.Clone(bsChannels), channels.Mirakurun{Type: "CS", Channel: "CS2", Services: services(6, 296)})
+	e := setup(t, [][]string{{"BS", "CS"}, {"BS", "CS"}}, mkChannels, "", 1)
 	if s := open(t, e.base, q("BS", "BS15", "3", "epg BS15")).status; s != 200 {
 		t.Fatal(s)
 	}
@@ -664,14 +666,14 @@ func TestKeylessLimitCountsRidingOnMirakurunEPG(t *testing.T) {
 
 func TestGRMatchedByNumberNotServices(t *testing.T) {
 	// 中継局: T16 と T20 は同じ局を流す
-	mk := []MirakurunChannel{{Type: "GR", Channel: "16"}, {Type: "GR", Channel: "20", Services: services(32736, 1024)}}
-	var stored []DenpaChannel
+	mk := []channels.Mirakurun{{Type: "GR", Channel: "16"}, {Type: "GR", Channel: "20", Services: services(32736, 1024)}}
+	var stored []channels.Denpa
 	for _, ch := range []string{"T16", "T20"} {
-		var d DenpaChannel
+		var d channels.Denpa
 		_ = json.Unmarshal([]byte(`{"type":"GR","channel":"`+ch+`","networkId":32736,"services":[{"serviceId":1024}]}`), &d)
 		stored = append(stored, d)
 	}
-	if toMirakurun("GR", "T16", stored, mk) != "16" || toMirakurun("GR", "T20", stored, mk) != "20" || toDenpa("GR", "20", stored, mk) != "T20" {
+	if channels.ToMirakurun("GR", "T16", stored, mk) != "16" || channels.ToMirakurun("GR", "T20", stored, mk) != "20" || channels.ToDenpa("GR", "20", stored, mk) != "T20" {
 		t.Fatal("GR mapping")
 	}
 }
